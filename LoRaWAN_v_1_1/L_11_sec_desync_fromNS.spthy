@@ -1,0 +1,1276 @@
+theory L_11_sec_desync_fromNS
+begin
+
+/*
+  Protocol:	LoRaWAN_v1.1 with NS_JS and NS_AS secured
+
+		   
+This model is based on the LoRAWAN specifications 1.1:
+
+https://lora-alliance.org/sites/default/files/2018-04/lorawantm_specification_-v1.1.pdf
+		   
+
+time tamarin-prover L_11_sec_desync_fromNS.spthy\
+ --heuristic=O --oraclename=LoRaWanJSAS_Desync_A1.py\
+ --prove +RTS -N10 -RTS
+
+For 		ASType1='GetKeyFromNS':
+
+*/
+
+
+
+builtins:   asymmetric-encryption, symmetric-encryption, multiset
+
+functions:  MAC/2, verifyMAC/3, accept/0, SensorData/1, SessionKey/1, TimeStamp/1,
+			//wrappers - don't do anything but prevent partial deconstructions where used
+			AesKey/2, ClientID/1, Nonce/1, Counter/1, SessionID/1, Response/1, PD_Wrapper/1
+
+equations:  
+            verifyMAC( m, k, MAC( m, k ) ) = accept
+
+
+// Protocol Restrictions (Axioms)
+
+restriction equality: 			"All #i    x y    .  Eq( x, y ) @ i ==> x = y"
+
+//we only want one NS, AS and JS for the time being
+restriction one_server:
+		"All #i #j  Role SVR1 SVR2 . EntityInit(Role, SVR1)@i & EntityInit(Role, SVR2)@j & not(Role='ED') ==> #i=#j"
+
+//we also want the servers and EDs to be different:
+restriction unique_entities: 
+		"All #i #j Role1 Role2 Entity . EntityInit(Role1, Entity)@i & EntityInit(Role2, Entity)@j ==> #i=#j"
+
+restriction maxEDJoinRequests:
+"All ED JoinEUI requests #i . MaxRequests(ED, JoinEUI, requests) @ i ==> Ex z. requests + z = '1'+'1'+'1'+'1'"//max of 3 request
+
+restriction maxJSJoinResponses:
+"All ED JoinEUI responses #i . MaxResponses(ED, JoinEUI, responses) @ i ==> Ex z. responses + z = '2'+'2'+'2'+'2'+'2'" //max of 4 responses
+
+restriction LessThan:
+"All x y #i. LessThan(x,y)@#i ==> Ex z. x + z = y"
+
+/* Secure Channel rules
+
+   Communication between the Network Server(NS1) and Join Server (JoinEUI)
+   as well as Join Server(JoinEUI) and Application Server (AS1)
+   is done over a 'Secure Channel'. This means that an adversary can neither 
+   modify nor learn messages that are sent over the channel. 
+   Sec( A, B, x ) is a linear fact modelling that the adversary cannot replay
+   on this channel. Secure channels have the property of being both
+   confidential and authentic. Communication between the different parties is 
+   constrained by the channel invariant !F_Paired, such that two arbitrary roles
+   cannot communicate over this channel.
+*/
+
+rule ChanOut_S [colour=ffffff]:
+    [ Out_S( $A, $B, x ), !F_Paired( $A, $B ) ]
+  --[ ChanOut_S( $A, $B, x ) ]->
+    [ Sec( $A, $B, x ) ]
+
+
+rule ChanIn_S [colour=ffffff]:
+    [ Sec( $A, $B, x ) ]
+  --[ ChanIn_S( $A, $B, x ) ]->
+    [ In_S( $A, $B, x ) ]
+
+
+
+/* 
+	Start of the commissioning procedure for JS, NS, AS and end devices
+
+*/
+
+// In this model consists of one Join Server, one Network Server, 
+// one Application Server and potentially multiple end devices.
+
+//Create Join Server
+/*
+From the LoRAWAN backend specifications(pp9-10):
+The Join Server (JS) manages the Over-the-Air (OTA) End-Device activation process. There
+may be several JSs connected to a NS, and a JS may connect to several NSs.
+The End-Device signals which JS should be interrogated through the JoinEUI field of the
+Join-request message. Each JS is identified by a unique JoinEUI value. Note that AppEUI
+field of the Join-request in LoRaWAN 1.0/1.0.2 [LW10, LW102] is renamed to JoinEUI field
+in LoRaWAN 1.1 [LW11]. 
+[...]
+The JS knows the End-Device’s Home Network Server identifier and provides that
+information to the other Network Servers when required by the roaming procedures.
+The JS contains the required information to process uplink Join-request frames and
+generate the downlink Join-accept frames. It also performs the network and application
+session key derivations. It communicates the Network Session Key of the End-Device to the
+NS, and the Application Session Key to the corresponding Application Server.
+*/
+
+rule JS_Init:
+
+	[]
+	
+	--[
+		EntityInit('JS', $JoinEUI)
+		, OnlyOnce('JS_Init')
+	]->
+	
+	[ 
+	 !JSInitialised($JoinEUI) 
+	]
+
+// Create the Network server
+/*
+
+The Network Server (NS) terminates the LoRaWAN MAC layer for the End-Devices
+connected to the network. It is the center of the star topology.
+Generic features of NS are:
+- End-Device address check,
+- Frame authentication and frame counter checks,
+- Acknowledgements,
+- Data rate adaptation,
+- Responding to all MAC layer requests coming from the End-Device,
+- Forwarding uplink application payloads to the appropriate Application Servers,
+- Queuing of downlink payloads coming from any Application Server to any End-Device connected to the network,
+- Forwarding Join-request and Join-accept messages between the End-Devices and the Join Servers.
+In a roaming architecture, an NS may play three different roles depending on whether the
+End-Device is in roaming situation or not, and the type of roaming that is involved.
+
+Serving NS (sNS) controls the MAC layer of the End-Device.
+
+Home NS (hNS) is where Device Profile, Service Profile, Routing Profile and DevEUI of the
+End-Device are stored. hNS has a direct relation with the Join Server that will be used for
+the Join Procedure. It is connected to the Application Server (AS). When hNS and sNS are
+separated, they are in a roaming agreement. Uplink and downlink packets are forwarded
+between the sNS and the hNS.
+
+Forwarding NS (fNS) is the NS managing the Radio Gateways. When sNS and fNS are
+separated, they are in a roaming agreement. There may be one or more fNS serving the
+End-Device. Uplink and downlink packets are forwarded between the fNS and the sNS.
+*/
+
+//In our model the NS is always the home NS for each end device, we do not model any forwarding
+//between different network servers. In other words, end devices communicate always directly with 
+//their home network server which is connected to the device's join and app servers.
+
+rule NS_Init:
+
+	[]
+	
+	--[
+		EntityInit('NS', $NS)
+		, OnlyOnce('NS_Init')
+	]->
+	
+	[
+	 !NSInitialised($NS)
+	]
+
+//Create the app server
+
+/* from the LoRaWAN backend specifications (p11):
+The Application Server (AS) handles all the application layer payloads of the associated
+End-Devices and provides the application-level service to the end-user. It also generates all
+the application layer downlink payloads towards the connected End-Devices.
+There may be multiple ASs connected to a NS, and an AS may be connected to several NSs
+(operating End-Devices through several networks, for example). An AS may also be
+connected to multiple JSs.
+The Home NS routes the uplinks toward the appropriate AS based on the DevEUI.
+*/
+
+rule AS_Init:
+	let
+		//There are 2 ways in which way the AS can get the JS_AS_Key
+		ASType1='GetKeyFromNS'
+		ASType2='GetKeyFromJS'
+	in
+	[]
+	
+	--[
+		EntityInit('AS', $AS)
+		, OnlyOnce('AS_Init')
+	]->
+	
+	[
+	 !ASInitialised($AS) //potentially allows the AS to be associated with multiple JS, NS, EDs
+	//determine the type by changing this from ASType1 to ASType2 or vice versus
+	, !AS_Type($AS, ASType1) 
+	]
+
+//we need end devices - can have more than one.
+
+/*from the LoRAWAN backend specs(p12):
+There are two types of LoRaWAN End-Devices: Activation-by-Personalization (ABP)
+activated End-Devices, and Over-the-Air (OTA) activated End-Devices. ABP End-Devices
+are directly tied to a specific network by skipping the Join Procedure. OTA End-Devices
+perform Join Procedure to get activated on a selected network.
+[...]
+An OTA End-Device SHALL have the following information either when it leaves the
+manufacturer or upon configuration thereafter: DevEUI, NwkKey (R1.1-only), AppKey,
+JoinEUI. At this point it is called a Generic End-Device. The associated JS SHALL have
+DevEUI, AppKey, NwkKey (R1.1-only) of the End-Device. No NS or AS may have any
+information about the Generic End-Device until it is commissioned.
+
+*/
+
+//In this model we deal with "Over the air" activation(OTA) devices and initially all our 
+// devices are commissioned to use the same JS, NS and AS servers (as we only have one of each)
+
+rule EndDevice_Init:
+
+	[ ]
+	
+	--[
+		EntityInit('ED', $DevEUI) //End device (ED) initialised
+		, OnlyOnce('Device_Init')
+	]->
+	
+	[ 
+		 EDInitialised($DevEUI)
+	]
+	
+
+/* Commissioning Procedure:
+
+From the LoRAWAN backend specifications(p13):
+
+Commissioning procedure associates the End-Device with its Home NS and a specific AS.
+The JS of a commissioned OTA End-Device SHALL have the Home NS info for the End-
+Device. The AS associated with the End-Device SHALL have the DevEUI of the End-Device.
+The Home NS SHALL have various profile information related to the End-Device and its
+service subscription. Mechanisms used for provisioning the AS, JS, and NS with the
+required information is outside the scope of this specification.
+
+From the LoRAWAN backend specifications(p14):
+[The] Commissioning Procedure is executed by the AS, JS (only applicable to OTA), and NS for a
+given End-Device. It involves the JS associating the End-Device with a Home NS (only
+applicable to OTA), the Home NS and the AS receiving the profile information related to the
+End-Device and its service subscription. The mechanisms used for provisioning the required
+information on the aforementioned network elements is outside the scope of this
+specification.
+
+*/
+rule Commissioning_Procedure_Out_of_Band:
+	let
+		//create the device specific encryption keys
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		AppKey=AesKey('App',~rootAppKey)
+		//create a shared key between the JS and AS
+		
+/*
+from the LoRaWAN backend specifications(p18-19):
+Step 7: 
+When AS receives the encrypted AppSKey along with the application payload, then the AS
+SHALL decrypt the AppSKey using a secret key shared between the JS and the AS, and
+use the AppSKey to decrypt the received payload.
+*/
+		JS_AS_Key=AesKey('JSAS',~JSASKey)
+	in
+	[
+	 Fr(~rootNwkKey)
+	 , Fr(~rootAppKey)
+	 , Fr(~JSASKey)
+	 , !JSInitialised($JoinEUI)
+	 , !NSInitialised($NS)
+	 , !ASInitialised($AS)
+	 , !AS_Type($AS, ASType)
+	 , EDInitialised($DevEUI) //this ensure an end device is associated with only one JS, AS, NS
+	]
+	
+	--[
+		Linked_ED_With_JS_NS_AS($DevEUI, $JoinEUI, $NS, $AS)
+		, OnlyOnce('JoinServer_Commission_EndDevice')
+	]->
+	
+	[
+	  EDCommissioned($DevEUI, $JoinEUI, $NS, $AS, NwkKey, AppKey)
+	, !NSCommissioned($DevEUI, $JoinEUI, $NS, $AS)
+	, ASCommissioned($DevEUI, $JoinEUI, $NS, $AS, JS_AS_Key) //will be used for AS_Type='GetKeyFromNS'
+	, ASCommissioned($DevEUI, $JoinEUI, $NS, $AS, ASType)	//will be used for AS_Type='GetKeyFromJS'
+	, JSCommissioned($DevEUI, $JoinEUI, $NS, $AS, NwkKey, AppKey, JS_AS_Key)
+	/* from the LoRaWAN backend specification(p10):
+	The JS and the NS SHALL be able to establish secure communication which provides end-
+	point authentication, integrity and replay protection, and confidentiality.
+	*/
+	, !F_Paired( $NS, $JoinEUI ) // this allows secure comms 
+	, !F_Paired( $JoinEUI, $NS1 ) // between NS and JoinEUI
+
+	 /* from the LoRaWAN backend specification(p10):
+	The JS and the AS SHALL be able to establish secure communication which provides end-
+	point authentication, integrity, replay protection, and confidentiality
+	*/
+	//only needed if the AS needs to ask the JS for the AppSKey - currently not modelled.
+	/*
+	from the LoRaWAN backend specification(p19):
+	Step 8:
+	This step takes place in case the AS wants to receive the AppSKey directly from the JS.
+	The AS SHALL request the AppSKey identified by the DevEUI of the End-Device and the
+	SessionKeyID from the JS. The AppSKey is encrypted using a shared secret between the JS
+	and the AS. The JS sends the encrypted AppSKey, DevEUI and the SessionKeyID to the AS.
+	Then the AS SHALL decrypt the encrypted AppSKey using a secret key shared between the
+	JS and the AS. Then, the AS starts using the AppSKey to encrypt and decrypt the application
+	payload.
+	*/
+	, !F_Paired( $AS, $JoinEUI ) // this allows secure comms 
+	, !F_Paired( $JoinEUI, $AS ) // between AS and JoinEUI
+
+	//We assume there is a secure channel between NS and AS 
+	//as there is an integrity check that is undefined 
+	//(line 1437 - LoRA WAN Spec 1.1)
+	, !F_Paired( $AS, $NS ) // this allows secure comms 
+	, !F_Paired( $NS, $AS ) // between AS and NS
+	 ]
+
+
+
+//This rules completes the commissioning process for the end device
+
+rule EndDevice_Commissioned:
+	let
+		ctr_ED='1' //counter for the end device
+		ctr_JS='2' //check that the join nonce is increasing
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		AppKey=AesKey('App',~rootAppKey)
+	in
+	[
+	EDCommissioned($DevEUI, $JoinEUI, $NS, $AS, NwkKey, AppKey)
+	]
+	
+	--[
+		CommissionCompleted('ED', $DevEUI, $JoinEUI, $NS, $AS)
+		, CounterInit($DevEUI, ctr_ED)
+		, OnlyOnce('EndDevice_Commissioned')
+	]->
+	
+	[ 
+	 ED_State_01($DevEUI, $JoinEUI, $NS, $AS, ctr_ED)
+	, CheckCtrJS($DevEUI, ctr_JS) //needed by Device_Receive_JoinAccept rule
+	, !Ltk_shared($DevEUI, $JoinEUI, NwkKey)
+	, !Ltk_shared($DevEUI, $JoinEUI, AppKey)
+	]
+	
+
+
+/*
+Final part of the Commission procedure for the Join Server
+
+from the LoRaWAN Backend specifications(p10):
+For that purpose the JS SHALL contain the following information for each End-Device under
+its control :
+ - DevEUI
+ - AppKey
+ - NwkKey (only applicable to LoRaWAN 1.1 End-Device)
+ - Home Network Server identifier
+ - Application Server identifier
+[..]
+The root keys NwkKey and AppKey are only available in the JS and the End-Device, and
+they are never sent to the NS nor the AS.
+*/
+
+// Since we only have one JS, all EDs are under its control.
+rule JoinServer_Commissioned:
+	let
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		AppKey=AesKey('App',~rootAppKey)
+		JS_AS_Key=AesKey('JSAS', ~JSASKey)
+		
+		ctr_ED='1' //JoinEUI checks that the end device counter increases
+		ctr_JS='2' //join nonce counter
+		JoinNonce=Nonce('undefined')
+		DevAddr=Nonce('undefined')
+		JSIntKey=SessionKey('undefined')
+		FNwkSIntKey=SessionKey('undefined')
+		SNwkSIntKey=SessionKey('undefined')
+		NwkSEncKey=SessionKey('undefined')
+		AppSKey=SessionKey('undefined')
+		ED_Properties=<ctr_ED, ctr_JS, JoinNonce, DevAddr, JSIntKey, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey>
+		
+	in
+	[
+		JSCommissioned($DevEUI, $JoinEUI, $NS, $AS, NwkKey, AppKey, JS_AS_Key)
+	]
+	
+	--[
+		CommissionCompleted('JS', $JoinEUI, $DevEUI, $NS, $AS)
+		, OnlyOnce('JoinServer_Commissioned')
+	]->
+	
+	[
+		JS_State_01($JoinEUI, $DevEUI, $NS, $AS, ED_Properties)
+		, !Ltk_shared($JoinEUI, $DevEUI, NwkKey)
+		, !Ltk_shared($JoinEUI, $DevEUI, AppKey)
+		, !Ltk_shared($JoinEUI, <$AS, $DevEUI>, JS_AS_Key)
+	]
+
+
+/* 	
+	Commissioning procedure complete: AS, NS, JS and end devices have been set up and equipped with the necessary
+	key material, device information and secure channels.
+*/
+
+/*
+from the LoRaWAN backend specifications (p17):
+Step 1:
+The End-Device SHALL transmit a Join-request message.
+
+from the LoRaWan v1.1 specification (p52):
+The join procedure is always initiated from the end-device by sending a join-request
+message.
+The join-request message contains the JoinEUI and DevEUI of the end-device followed by
+a nonce of 2 octets (DevNonce). DevNonce is a counter starting at 0 when the device 
+is initially powered up and incremented with every Join-request. 
+A DevNonce value SHALL NEVER be reused for a given JoinEUI
+value. If the end-device can be power-cycled then DevNonce SHALL be persistent (stored
+in a non-volatile memory). 
+Resetting DevNonce without changing JoinEUI will cause the Network Server to discard 
+the Join-requests of the device. For each end-device, the Network Server keeps track of the last 
+DevNonce value used by the end-device, and ignores Join-requests if DevNonce is not incremented.
+*/
+
+rule Device_Join_Request:
+	let
+		//ensure we are using the right key
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		//generate request
+		DevNonce=ctr_ED+'1' //increment counter
+		tau_c=MAC(<'MHDR', $JoinEUI, $DevEUI, DevNonce>, NwkKey)
+		req=<$JoinEUI, $DevEUI, Counter(DevNonce), tau_c> // the Counter wrapper is needed to avoid partial deconstructions...
+	in
+	[
+	  ED_State_01($DevEUI, $JoinEUI, $NS, $AS, ctr_ED)
+	, !Ltk_shared($DevEUI, $JoinEUI, NwkKey)
+	]
+	
+	--[
+		DeviceJoinRequest($DevEUI, $NS, $JoinEUI, DevNonce)
+		, MaxRequests($DevEUI, $JoinEUI,  DevNonce)
+		, Role('EndDevice')
+		, OnlyOnce('Device_Join_Request')
+	]->
+	
+	[
+		Out(<'Join_Request', $NS, req>)
+		//allow us to re-enter this rule until the restriction maxEDJoinRequests kicks in
+		, ED_State_01($DevEUI, $JoinEUI, $NS, $AS, DevNonce) 
+		//use this to match the JS response in the Device_Receive_JoinAccept rule
+		, ED_State_02($DevEUI, $JoinEUI, $NS, $AS, DevNonce) 
+	]
+
+
+/*
+from the LoRaWAN backend specifications (p17-18):
+Step 2:
+
+When the NS receives the Join-request message, the NS SHALL determine whether it is the
+Home NS for the End-Device identified by DevEUI, or not. In this flow it is assumed that the
+NS is the Home NS of the End-Device.
+[...]
+If the NS is neither the Home NS of the End-Device nor configured to use the JS,
+then the NS SHALL silently ignore the Join-request and the procedure terminates here.
+
+Step 3:
+The NS sends a JoinReq message to the JS carrying the PHYPayload of the Join-request
+message, MACVersion, DevEUI, DevAddr, DLSettings, RxDelay, and optionally CFList. The
+NS SHALL set the value of the MACVersion to the highest common version between the
+End-Device and the NS.
+*/
+
+//In our model most of the low-level technical details can be omitted
+
+/*
+Clarify the LoRaWAN v1.1 specification p52-53, l.1511-1513:
+
+For each end-device, the Network Server keeps track of the last DevNonce value 
+used by the end-device, and ignores Join-requests if DevNonce is not incremented.
+
+We concluded that this is a mistake in the specs and the model has the JS keep track of the nonce.
+
+My reasoning is that the specs also say that the NS constructs the join-accept message which
+is clearly wrong:
+
+From the LoRaWAN v1.1 specification p53, l.1535-1536:
+The Network Server will respond to the join or rejoin-request message with a join-accept
+message if the end-device is permitted to join a network.
+
+The above only makes sense if NS=JS which we explicitly don't want.
+
+However, the home NS of an end device could keep track of the join requests 
+using the device none and the rest would still work. 
+
+
+*/
+
+rule NetworkServer_Receive_JoinRequest_Forward_To_JS:
+	let
+		req=<$JoinEUI, $DevEUI, Counter(DevNonce), tau_c>
+	in
+	
+	[
+	  In(<'Join_Request', $NS, req>)
+	, !NSCommissioned($DevEUI, $JoinEUI, $NS, $AS)
+	]
+	--[
+		  NetworkServerReceiveJoinRequest($NS, $DevEUI, $JoinEUI)
+		, OnlyOnce('NetworkServer_Receive_JoinRequest_Forward_To_JS')
+	]->
+	
+	[
+	  Out_S($NS,$JoinEUI, <'Join_Request', req>)
+	]
+	
+	
+/*
+from the LoRaWAN backend specifications (p18):
+Step 4:
+The JS SHALL process the Join-request message according to the MACVersion and send
+JoinAns to the NS carrying Result=Success, PHYPayload with Join-accept message,
+network session keys (SNwkSIntKey, FNwkSIntKey, and NwkSEncKey in case of a R1.1,
+and NwkSKey in case of a R1.0/1.0.2 End-Device), either the encrypted AppSKey or
+SessionKeyID or both, and Lifetime in case of success, and Result=UnknownDevEUI or
+MICFailed in case of failure (e.g., if the End-Device is not recognized by the JS, or if the MIC
+of the Join-request fails the verification).
+JS may create SessionKeyID which is associated with the generated session keys.
+SNwkSIntKey, FNwkSIntKey, NwkSEncKey, and AppSKey are generated based on the
+LoRaWAN 1.1 specification [LW11] for R1.1 End-Devices. NwkSKey is generated based on
+the LoRaWAN 1.0 specification [LW10] for R1.0/R1.0.2 End-Devices. AppSKey is encrypted
+using a key shared between the JS and the AS when it is delivered from the JS to the NS.
+
+
+*/
+rule JoinServer_Receive_JoinRequest_Generate_Response_with_Key:
+
+	let
+		//fixed values
+		NetID='NetID'
+		
+		//inputs
+		ED_Properties=<ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+		req=<$JoinEUI, $DevEUI, Counter(DevNonce),tau_c>
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		AppKey=AesKey('App',~rootAppKey)
+		
+		//verify tau_c
+		tau_c_dash=<'MHDR', $JoinEUI, $DevEUI, DevNonce>
+		
+		//generate response - assuming OptNeg is set, ie we are using v1.1
+		ctr_JS=ctr_JS_in+'2'
+		JoinNonce=Nonce(<$DevEUI, ctr_JS>) //nonce that is device specific and is incremented for each join request
+		DevAddr=Nonce(~rnd32DevAddr) //random device address assigned by the Join Server
+		
+		//compute various keys
+		pad16='pad_with_0s'
+		//the key used for the mac durung the initial Join-Accept answer
+		JSIntKey=SessionKey(senc(<'0x06', $DevEUI, pad16>, NwkKey))
+		//the key used for the Join-Accept triggered by a Rejoin-Request
+		//JSEncKey=senc(<'0x05', DevEUI, pad16>, NwkKey) not needed atm
+		
+		//compute various network session keys
+		//Forwarding Network session integrity key (p55, l. 1604)
+		FNwkSIntKey=SessionKey(senc(<'0x01',JoinNonce, $JoinEUI,DevNonce, pad16>, NwkKey))
+		//Serving Network session integrity key (p55, l. 1605)
+		SNwkSIntKey=SessionKey(senc(<'0x03',JoinNonce, $JoinEUI,DevNonce, pad16>, NwkKey))
+		//Network session encryption key (pp55, l. 1606)
+		NwkSEncKey=SessionKey(senc(<'0x04',JoinNonce, $JoinEUI,DevNonce, pad16>, NwkKey))
+		//compute the secret Application Server Key (pp55, l. 1601)
+		AppSKey=SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, pad16>, AppKey))
+
+		newED_Properties=<DevNonce, ctr_JS, JoinNonce, DevAddr, JSIntKey, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey>
+		//Since this a normal join and not a rejoin, we use 0xFF
+		tau_s=MAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', JoinNonce, NetID, DevAddr,'opt_params'>, JSIntKey)
+		//this is the original Join-request so NwkKey is used to encode the response 
+		//(see p55, ll. 1617-1623)
+		
+		//note the specs say to use dec but only because the ED has limited computing power and
+		//can only handle encryption. 
+		//We don't have that constraint... hence we encrypt and decrypt on the device
+		ans=senc(<JoinNonce, NetID, DevAddr, 'opt_params',tau_s>, NwkKey)
+		sessionID=SessionID(~AppSKey_SID)
+		//BackEnd Spec p 19: States that the APPSKey is encrypted but gives no details
+		//we use a simple version of symmetric encryption for our implementation.
+		encAppSkey=senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, JS_AS_Key)
+		EDResponse=<'Join_Accept', $DevEUI, ans>
+		NSResponse=<'SessionKeys', $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey, NwkSEncKey>
+		ASDetails=<'EncAppSKey',encAppSkey>
+	in
+	[
+		  In_S($NS, $JoinEUI, <'Join_Request', req>)
+		, JS_State_01($JoinEUI, $DevEUI, $NS, $AS, ED_Properties)
+		, !Ltk_shared($JoinEUI, $DevEUI, NwkKey)
+		, !Ltk_shared($JoinEUI, $DevEUI, AppKey)
+		, !Ltk_shared($JoinEUI, <$AS, $DevEUI>, JS_AS_Key)
+		, !AS_Type($AS,'GetKeyFromNS')
+		, Fr(~rnd32DevAddr)
+		, Fr(~AppSKey_SID)
+	]
+	
+	--[
+		  Eq(verifyMAC(tau_c_dash, NwkKey, tau_c), accept)
+		, LessThan(ctr_ED_in, DevNonce) //check that the device counter has increased since the last request
+		, OnlyOnce('JoinServer_Receive_JoinRequest_Generate_Response')
+		, GenerateJoinResponse($JoinEUI, $NS, $DevEUI)
+		, JoinResponse($JoinEUI, $DevEUI, DevNonce, ctr_JS)
+		, Running($JoinEUI, $DevEUI, <FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey, JSIntKey>)
+		, Honest($JoinEUI)
+		, Honest($DevEUI)
+		, Role('JoinServer')
+		, !Ltk_shared($JoinEUI, <$DevEUI, $NS>, FNwkSIntKey)
+		, !Ltk_shared($JoinEUI, <$DevEUI, $NS>, SNwkSIntKey)
+		, !Ltk_shared($JoinEUI, <$DevEUI, $NS>, NwkSEncKey)
+		, !Ltk_shared($JoinEUI, <$DevEUI, $AS>, AppSKey)
+		, Requests($DevEUI,DevNonce)
+	]->
+	
+		
+	[
+	  Out_S($JoinEUI, $NS, <EDResponse, NSResponse, ASDetails>)
+	  //allows us to re-enter this rule until the restriction maxJSJoinResponses kicks in
+	, JS_State_01($JoinEUI, $DevEUI, $NS, $AS, newED_Properties) 
+	]
+
+
+
+
+
+rule JoinServer_Receive_JoinRequest_Generate_Response_with_SessionID:
+
+	let
+		//fixed values
+		NetID='NetID'
+		
+		//inputs
+		ED_Properties=<ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+		req=<$JoinEUI, $DevEUI, Counter(DevNonce),tau_c>
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		AppKey=AesKey('App',~rootAppKey)
+		
+		//verify tau_c
+		tau_c_dash=<'MHDR', $JoinEUI, $DevEUI, DevNonce>
+		
+		//generate response - assuming OptNeg is set, ie we are using v1.1
+		ctr_JS=ctr_JS_in+'2'
+		JoinNonce=Nonce(<$DevEUI, ctr_JS>) //nonce that is device specific and is incremented for each join request
+		DevAddr=Nonce(~rnd32DevAddr) //random device address assigned by the Join Server
+		
+		//compute various keys
+		pad16='pad_with_0s'
+		//the key used for the mac durung the initial Join-Accept answer
+		JSIntKey=SessionKey(senc(<'0x06', $DevEUI, pad16>, NwkKey))
+		//the key used for the Join-Accept triggered by a Rejoin-Request
+		//JSEncKey=senc(<'0x05', DevEUI, pad16>, NwkKey) not needed atm
+		
+		//compute various network session keys
+		//Forwarding Network session integrity key (p55, l. 1604)
+		FNwkSIntKey=SessionKey(senc(<'0x01',JoinNonce, $JoinEUI,DevNonce, pad16>, NwkKey))
+		//Serving Network session integrity key (p55, l. 1605)
+		SNwkSIntKey=SessionKey(senc(<'0x03',JoinNonce, $JoinEUI,DevNonce, pad16>, NwkKey))
+		//Network session encryption key (pp55, l. 1606)
+		NwkSEncKey=SessionKey(senc(<'0x04',JoinNonce, $JoinEUI,DevNonce, pad16>, NwkKey))
+		//compute the secret Application Server Key (pp55, l. 1601)
+		AppSKey=SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, pad16>, AppKey))
+
+		newED_Properties=<DevNonce, ctr_JS, JoinNonce, DevAddr, JSIntKey, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey>
+		//Since this a normal join and not a rejoin, we use 0xFF
+		tau_s=MAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', JoinNonce, NetID, DevAddr,'opt_params'>, JSIntKey)
+		//this is the original Join-request so NwkKey is used to encode the response 
+		//(see p55, ll. 1617-1623)
+		
+		//note the specs say to use dec but only because the ED has limited computing power and
+		//can only handle encryption. 
+		//We don't have that constraint... hence we encrypt and decrypt on the device
+		ans=senc(<JoinNonce, NetID, DevAddr, 'opt_params',tau_s>, NwkKey)
+		sessionID=SessionID(~AppSKey_SID) 
+		//See above as before (LoraWAN Backend spec p 19)
+		encAppSkey=senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, JS_AS_Key)
+		EDResponse=<'Join_Accept', $DevEUI, ans>
+		NSResponse=<'SessionKeys', $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey, NwkSEncKey>
+		ASDetails=<'sessionID', sessionID>
+	in
+	[
+		  In_S($NS, $JoinEUI, <'Join_Request', req>)
+		, JS_State_01($JoinEUI, $DevEUI, $NS, $AS, ED_Properties)
+		, !Ltk_shared($JoinEUI, $DevEUI, NwkKey)
+		, !Ltk_shared($JoinEUI, $DevEUI, AppKey)
+		, !Ltk_shared($JoinEUI, <$AS, $DevEUI>, JS_AS_Key)
+		, !AS_Type($AS,'GetKeyFromJS')
+		, Fr(~rnd32DevAddr)
+		, Fr(~AppSKey_SID)
+	]
+	
+	--[
+		  Eq(verifyMAC(tau_c_dash, NwkKey, tau_c), accept)
+		, LessThan(ctr_ED_in, DevNonce) //check that the device counter has increased since the last request
+		, OnlyOnce('JoinServer_Receive_JoinRequest_Generate_Response')
+		, GenerateJoinResponse($JoinEUI, $NS, $DevEUI)
+		, JoinResponse($JoinEUI, $DevEUI, DevNonce, ctr_JS)
+		, Running($JoinEUI, $DevEUI, <FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey, JSIntKey>)
+		, Commit_Confree('Join_ED_JS_confree', $DevEUI, $JoinEUI, AppSKey)
+		, Honest($JoinEUI)
+		, Honest($DevEUI)
+		, Role('JoinServer')
+		, !Ltk_shared($JoinEUI, <$DevEUI, $NS>, FNwkSIntKey)
+		, !Ltk_shared($JoinEUI, <$DevEUI, $NS>, SNwkSIntKey)
+		, !Ltk_shared($JoinEUI, <$DevEUI, $NS>, NwkSEncKey)
+		, !Ltk_shared($JoinEUI, <$DevEUI, $AS>, AppSKey)
+		, Requests($DevEUI,DevNonce)
+	]->
+	
+		
+	[
+	  Out_S($JoinEUI, $NS, <EDResponse, NSResponse, ASDetails>)
+	  //allows us to re-enter this rule until the restriction maxJSJoinResponses kicks in
+	, JS_State_01($JoinEUI, $DevEUI, $NS, $AS, newED_Properties) 
+	, Out_S($JoinEUI, $AS, <sessionID, AppSKey>) //this sends the AppSKey associated with the sessionID to the AS
+	]
+
+	
+rule NetworkServer_Receive_JoinResponse_Forward_To_ED:
+	let
+		EDResponse=<'Join_Accept', $DevEUI, ans>
+		NSResponse=<'SessionKeys', $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey, NwkSEncKey>
+		//ASDetails contains either sessionID or encAppSkey
+	in
+	[
+	  In_S($JoinEUI, $NS, <EDResponse, NSResponse, ASDetails>)
+	]
+	--[
+		  NetworkServerReceiveJoinResponse($NS, $JoinEUI, $DevEUI)
+		, OnlyOnce('NetworkServer_Receive_JoinResponse_Forward_To_ED')
+	]->
+	
+	[
+	  Out(<'Join_Accept', $NS, $DevEUI, Response(ans)>)
+	, NS_State_01($NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, ASDetails)
+	//, !Ltk_shared($NS, $DevEUI, FNwkSIntKey) // at some point we
+	//, !Ltk_shared($NS, $DevEUI, SNwkSIntKey) // should start leaking
+	//, !Ltk_shared($NS, $DevEUI, NwkSEncKey)  // these keys from here
+	]
+
+rule Device_Receive_JoinAccept:
+
+	let
+		//some padding...
+		pad16='pad_with_0s'
+		
+		//inputs - we use pattern matching here to decode this
+		ans = senc(<Nonce(<$DevEUI_in, ctr_JS_in>), NetID, DevAddr, 'opt_params',tau_s>, NwkKey)
+		JoinNonce=Nonce($DevEUI_in, ctr_JS_in)
+		
+		NwkKey=AesKey('Nwk',~rootNwkKey)
+		AppKey=AesKey('App',~rootAppKey)
+		
+		//compute various keys
+
+		//Forwarding Network session integrity key 
+		FNwkSIntKey=SessionKey(senc(<'0x01',JoinNonce,$JoinEUI,DevNonce, pad16>, NwkKey))
+		
+		//Serving Network session integrity key 
+		SNwkSIntKey=SessionKey(senc(<'0x03',JoinNonce,$JoinEUI,DevNonce, pad16>, NwkKey))
+		
+		//Network session encryption key 
+		NwkSEncKey=SessionKey(senc(<'0x04',JoinNonce,$JoinEUI,DevNonce, pad16>, NwkKey))
+		
+		//compute the secret Application Server Key
+		AppSKey=SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, pad16>, AppKey))
+
+		//the key used for the mac durung the initial Join-Accept answer
+		JSIntKey=SessionKey(senc(<'0x06', $DevEUI, pad16>, NwkKey))
+
+		
+	in
+	
+	[
+		  In(<'Join_Accept', $NS, $DevEUI, Response(ans)>)
+		, ED_State_02($DevEUI, $JoinEUI, $NS, $AS, DevNonce)
+		, !Ltk_shared($DevEUI, $JoinEUI, NwkKey)
+		, !Ltk_shared($DevEUI, $JoinEUI, AppKey)
+		, CheckCtrJS($DevEUI, ctr_JS)
+	]
+	
+	--[
+		  DeviceJoinAccept($DevEUI,$NS, $JoinEUI, DevNonce)
+		  //NB: added DevEUI to ensure weak agreement
+		, Eq(verifyMAC(<'0xFF',$JoinEUI, DevNonce, 'MHDR', JoinNonce, NetID, DevAddr,'opt_params'>, JSIntKey, tau_s), accept)
+		, OnlyOnce('Device_Receive_JoinAccept')
+		, LessThan(ctr_JS, ctr_JS_in) //check that the join nonce is strictly increasing
+		, Commit($DevEUI,$JoinEUI, <FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey, JSIntKey>)
+		, Secret($DevEUI,$JoinEUI, <FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey, JSIntKey>)
+		, Honest($DevEUI)
+		, Honest($JoinEUI)
+		, Role('EndDevice')
+		, MaxResponses($DevEUI, $JoinEUI, ctr_JS) // restriction maxJSJoinResponses applies here
+	]->
+	
+	[
+	  CheckCtrJS($DevEUI, ctr_JS_in)
+	  //for sending data to the AS we need the following
+	, ED_State_03($DevEUI, $JoinEUI, $NS, $AS, DevNonce, JoinNonce, FNwkSIntKey, NwkSEncKey, AppSKey)
+	, !Ltk_shared($DevEUI, $NS, FNwkSIntKey)
+	, !Ltk_shared($DevEUI, $NS, SNwkSIntKey)
+	, !Ltk_shared($DevEUI, $NS, NwkSEncKey)
+	, !Ltk_shared($DevEUI, $AS, AppSKey)
+	]
+
+	
+rule Device_Send_Message_To_App_Server:
+	let
+		//fixed data
+		pad16='pad_with_0s'
+		//some random sensor data
+		data=SensorData(~rndData)
+		
+		//encode the payload:
+		
+		//Forwarding Network session integrity key 
+		FNwkSIntKey=SessionKey(senc(<'0x01',JoinNonce,$JoinEUI,DevNonce, pad16>, NwkKey))
+		
+		//Network session encryption key 
+		NwkSEncKey=SessionKey(senc(<'0x04',JoinNonce,$JoinEUI,DevNonce, pad16>, NwkKey))
+		
+		//compute the secret Application Server Key
+		AppSKey=SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, pad16>, AppKey))
+
+
+		//encrypt the data which is to be sent to the AS
+		encData=senc(<$DevEUI, data>, AppSKey) // This is an abstraction of p26. l759
+
+		//create a MAC of the data to be sent with the Forwarding Network Session Key
+		tau_ed=MAC(<$DevEUI, $NS, encData>, FNwkSIntKey) // This is stronger than the spec p28 l804
+		
+		//encrypt the data + its MAC to be sent to the NS using the Network Session encryption key
+		// This is an abstraction of the specs pXX lXX
+		networkEnc=senc(<$DevEUI, encData, tau_ed>, NwkSEncKey) 
+
+	in
+	[
+	  Fr(~rndData)
+	, ED_State_03($DevEUI, $JoinEUI, $NS, $AS, DevNonce, JoinNonce, FNwkSIntKey, NwkSEncKey, AppSKey)
+	/*, !Ltk_shared($DevEUI, $NS, FNwkSIntKey)
+	, !Ltk_shared($DevEUI, $NS, NwkSEncKey)
+	, !Ltk_shared($DevEUI, $AS, AppSKey)*/
+	]
+	
+	--[
+		  DeviceSendsData($DevEUI, $NS, $AS, data, encData)
+		, Running($DevEUI, $AS, AppSKey)
+		, Honest($DevEUI)
+		, Honest($AS)
+		, Role('EndDevice')
+		, OnlyOnce('Device_Send_Message_To_App_Server')
+	]->
+	
+	[
+	  Out(<$DevEUI, $NS, networkEnc, tau_ed, 'SendDataToAS'>)
+	]
+
+//this rule deals with an AS which wants to receive the JS_AS_Key directly from the NS
+rule NS_Get_Data_From_ED_Forward_to_AS_with_Key:
+	let
+		ASDetails=<'EncAppSKey',encAppSKey>
+		networkEnc=senc(<$DevEUI, encData, tau_ed>, NwkSEncKey)
+	in
+	[
+	  In(<$DevEUI, $NS, networkEnc, tau_ed, 'SendDataToAS'>)
+	, NS_State_01($NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, ASDetails)
+	, !AS_Type($AS, 'GetKeyFromNS')
+	]
+	
+	--[
+		  Eq(verifyMAC(<$DevEUI, $NS, encData>, FNwkSIntKey, tau_ed), accept)
+		, ReceivedDataFromEDForAS($NS, $DevEUI, $AS, encData)
+		, OnlyOnce('NS_Get_Data_Forward_to_AS')
+	]->
+	
+	[
+	  Out_S($NS, $AS, <$DevEUI, PD_Wrapper(encData), PD_Wrapper(encAppSKey), 'ForwardDataToAS_with_Key'>)
+	, NS_State_02($NS, $JoinEUI, $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey, NwkSEncKey)
+	]
+	
+//this rule deals with an AS which wants to receive the JS_AS_Key directly from the JS
+rule NS_Get_Data_From_ED_Forward_to_AS_with_SessionID:
+	let
+		ASDetails=<'sessionID',sessionID>
+		networkEnc=senc(<$DevEUI, encData, tau_ed>, NwkSEncKey)
+	in
+	[
+	  In(<$DevEUI, $NS, networkEnc, tau_ed, 'SendDataToAS'>)
+	, NS_State_01($NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, ASDetails)
+	, !AS_Type($AS, 'GetKeyFromJS')
+	]
+	
+	--[
+		  Eq(verifyMAC(<$DevEUI, $NS, encData>, FNwkSIntKey, tau_ed), accept)
+		, ReceivedDataFromEDForAS($NS, $DevEUI, $AS, encData)
+		, OnlyOnce('NS_Get_Data_Forward_to_AS')
+	]->
+	
+	[
+	  Out_S($NS, $AS, <$DevEUI, PD_Wrapper(encData), sessionID, 'ForwardDataToAS_with_SessionID'>)
+	, NS_State_02($NS, $JoinEUI, $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey, NwkSEncKey)
+	]
+
+	
+/* 
+The following rule only receives the data and the key.
+It does not use pattern matching to determine whether the payload can be decoded
+with the JS_AS_Key. As such it should allow for desynchronisation attacks between 
+the ED and the AS
+*/
+rule AS_Receive_Data_withKey_no_decoding:
+	let
+		//the following uses Tamarin's pattern matching
+                // to obtain the right JS_AS_Key
+		JS_AS_Key=AesKey('JSAS', ~JSASKey)
+		encAppSKey=senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, JS_AS_Key)
+                //We do not decrypt the encData
+                //This allows for the AppSKey to be out of sync
+		//encData=senc(<$DevEUI, data>, AppSKey)
+
+	in
+	[
+	  In_S($NS, $AS, <$DevEUI, PD_Wrapper(encData), PD_Wrapper(encAppSKey), 'ForwardDataToAS_with_Key'>)
+	,  ASCommissioned($DevEUI, $JoinEUI, $NS, $AS, JS_AS_Key) //first time AS is used with this NS, DevEui,JoinEUI combination
+	]
+	
+	--[
+		ASReceivedDataFromEDNoDecoding($AS, $NS, $DevEUI, encData)
+		, Commit($AS, $DevEUI, AppSKey)
+		, Honest($AS)
+		, Honest($DevEUI)
+		, Honest($JoinEUI) //we need to assume the Join Server is honest...
+		, Role('AppServer')
+		, OnlyOnce('AS_Receive_Data_withKey_noDecoding')
+	]->
+	
+	[
+	//protocol finished
+	]
+	
+rule AS_Receive_Data_withSessionID_no_decoding:
+	let
+		//the following uses Tamarin's pattern matching 
+		sessionID=SessionID(AppSKey_SID)
+		JS_AS_Key=AesKey('JSAS', ~JSASKey)
+		encAppSKey=senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, JS_AS_Key)
+	in
+	[
+	  In_S($NS, $AS, <$DevEUI, PD_Wrapper(encData), sessionID, 'ForwardDataToAS_with_SessionID'>)
+	,  ASCommissioned($DevEUI, $JoinEUI, $NS, $AS, 'GetKeyFromJS') //first time AS is used with this NS, DevEui,JoinEUI combination
+	, In_S($JoinEUI, $AS, <sessionID, AppSKey>)
+	]
+	
+	--[
+		ASReceivedDataFromEDNoDecoding($AS, $NS, $DevEUI, encData)
+		, Running_Confree('Join_AS_ED_confree',$AS, $DevEUI, AppSKey)
+		, Commit($AS, $DevEUI, AppSKey)
+		, Honest($AS)
+		, Honest($DevEUI)
+		, Honest($JoinEUI) //we need to assume the Join Server is honest...
+		, Role('AppServer')
+		, OnlyOnce('AS_Receive_Data_withSessionID_noDecoding')
+	]->
+	
+	[
+	//protocol finished
+	]
+
+// This completes the Join process with the AS and should have established a comms channel
+
+
+//the next two rules allow the device ID1 to be compromised. Note this 
+//could be an end device, ED, the Join server, JoinEUI, or the app server, AS.
+rule Shared_Key_Reveal1:
+	let
+		Key=AesKey(type, rndSeed)
+	in	
+	[!Ltk_shared($ID1, $ID2, Key)]
+	
+	--[
+		KeyReveal('Shared_Key_Reveal', $ID1)
+	]->
+	
+	[Out(<$ID1, Key>)]
+	
+//this rule allows the computed session keys to be compromised
+rule Shared_Key_Reveal2:
+	let
+		RootKey=AesKey(type, rndSeed)
+		Key=SessionKey(senc(data, RootKey))
+	in	
+	[!Ltk_shared($ID1, $ID2, Key)]
+	
+	--[
+		KeyReveal('Shared_Key_Reveal', $ID1)
+	]->
+	
+	[Out(<$ID1, Key>)]
+
+
+//some sanity checks:
+
+//the current model only has one Join Server
+lemma Only_One_JS:
+"All JS1 JS2 #t01 #t02 . EntityInit('JS', JS1) @ t01 & EntityInit('JS', JS2) @ t02 ==> #t01=#t02"
+ 
+ //the current model only has one NS Server
+lemma Only_One_NS:
+"All NS1 NS2 #t01 #t02 . EntityInit('NS', NS1) @ t01 & EntityInit('NS', NS2) @ t02 ==> #t01=#t02"
+
+ //the current model only has one AS Server
+lemma Only_One_AS:
+"All AS1 AS2 #t01 #t02 . EntityInit('AS', AS1) @ t01 & EntityInit('AS', AS2) @ t02 ==> #t01=#t02" 
+
+//we can have multiple commissioned end devices
+lemma Two_Commissioned_End_Devices: exists-trace
+" Ex ED1 ED2 JoinEUI NS AS #t01 #t02. 
+	CommissionCompleted('ED', ED1, JoinEUI, NS, AS) @ t01
+	&
+	CommissionCompleted('ED', ED2, JoinEUI, NS, AS) @ t02
+	& 
+	t01<t02
+	&
+	not(ED1=ED2)
+"
+
+lemma correctness: exists-trace
+"Ex JoinEUI AS NS DevEUI 
+	//Commissioning
+	#t01 #t02 #t03 #t04 #t05 #t06 #t07 
+	//ED and JOIN Server join procedure
+	#t08 DevNonce #t09 #t10 #t11 #t12 
+	//Sends Data to AS via NS to complete join with AS
+	#t13 data encData #t14 #t15
+
+. //such that
+	//Create Devices
+	EntityInit('JS', JoinEUI) @ t01
+	
+	& EntityInit('NS', NS) @ t02
+	
+	& EntityInit('AS', AS) @ t03
+	
+	& EntityInit('ED', DevEUI) @ t04
+
+	//Commission Procedure
+	& Linked_ED_With_JS_NS_AS(DevEUI, JoinEUI, NS, AS) @ t05
+
+	& CommissionCompleted('ED', DevEUI, JoinEUI, NS, AS) @ t06
+
+	& CommissionCompleted('JS', JoinEUI, DevEUI, NS, AS)@ t07
+	
+	//Join Process with Join Server
+	& DeviceJoinRequest(DevEUI, NS, JoinEUI, DevNonce)@ t08
+
+	& NetworkServerReceiveJoinRequest(NS, DevEUI, JoinEUI) @ t09
+	
+	& GenerateJoinResponse(JoinEUI, NS, DevEUI) @ t10
+	
+	& NetworkServerReceiveJoinResponse(NS, JoinEUI, DevEUI) @ t11
+	
+	& DeviceJoinAccept(DevEUI,NS, JoinEUI, DevNonce) @ t12 
+
+	//Send Message from Device to AS to complete join process with AS
+	//but allow for the wrong key to be sent to AS
+	& DeviceSendsData(DevEUI, NS, AS, data, encData) @ t13
+	
+	& ReceivedDataFromEDForAS(NS, DevEUI, AS, encData) @ t14
+
+	& ASReceivedDataFromEDNoDecoding(AS, NS, DevEUI, encData) @ t15
+
+	//we had no key reveal
+	& not( Ex RevealEvent ENTITY #k1 . KeyReveal(RevealEvent, ENTITY) @ k1) 
+	
+	& #t01<#t02
+	& #t02<#t03
+	& #t03<#t04
+	& #t04<#t05
+	& #t05<#t06
+	& #t06<#t07
+	& #t07<#t08
+	& #t08<#t09
+	& #t09<#t10
+	& #t10<#t11
+	& #t11<#t12
+	& #t12<#t13
+	& #t13<#t14
+	& #t14<#t15
+	
+	//restrict the trace further by preventing each rule to fire more than once
+	
+	& 	(All event #i #j . OnlyOnce(event) @ i & OnlyOnce(event) @ j ==> #i=#j)
+"
+
+
+lemma AS_confusion_freeness_1:
+"
+All DevEUIa AppSvr AppSKey1  #i 
+.
+	(
+			  Running_Confree('Join_AS_ED_confree', AppSvr, DevEUIa, AppSKey1) @ i & Role('AppServer') @ i
+		)
+		==> 
+            ( 
+			// Implies that the said AppSvr cannot end up with the view on these Devs swapped compared to how their JoinReqs started 
+			Ex JoinEUI #p .
+		 	Commit_Confree('Join_ED_JS_confree', DevEUIa, JoinEUI, AppSKey1) @ p & Role('JoinServer') @ p 
+
+			)
+			|
+			//or we had a key reveal for the ED or the Join Server
+			(Ex RevealEvent Entity #kr1 . KeyReveal(RevealEvent, Entity) @ kr1 & Honest(Entity) @ i)
+		
+"
+
+
+/* Agreement checks */
+
+// This lemma guarantees that whenever the host completes a run of the protocol, apparently with the issuer, 
+// then the issuer has previously been running the protocol, apparently with the host.
+
+lemma auth_weak_agreement_ED_JS:
+"
+All DevEUI JoinEUI n1 #i .
+	(
+		(
+			// For all commited JOIN sessions running between a device and network server on the term(s) n1 
+			Commit( DevEUI, JoinEUI, n1 ) @ i & Role('EndDevice') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running network server on some term(s) n2 
+			(Ex n2 #j . Running( JoinEUI, DevEUI, n2 ) @ j & Role('JoinServer') @ j) 
+			|
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+lemma auth_weak_agreement_ED_AS:
+"
+All AppSvr DevEUI  n1 #i .
+	(
+		(
+			// For all commited sessions running between an ED 
+			// and an App server on the term(s) n1 
+			Commit( AppSvr, DevEUI, n1 ) @ i & Role('AppServer') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running end device on some term(s) n2  with that AS
+			(Ex n2 #j . Running( DevEUI, AppSvr, n2 ) @ j & Role('EndDevice') @ j) 
+			|
+			//or we had a key reveal for the ED or the App Server
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+
+lemma auth_non_injective_agreement_ED_JS:
+"
+All DevEUI JoinEUI n1 #i .
+	(
+		(
+			// For all commited JOIN sessions running between a device and network server on the term(s) n1 
+			Commit( DevEUI, JoinEUI, n1 ) @ i & Role('EndDevice') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running network server on the same term(s)
+			(Ex #j . Running( JoinEUI, DevEUI, n1 ) @ j & Role('JoinServer') @ j) 
+			|
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+lemma auth_injective_agreement_ED_JS:
+"
+All DevEUI JoinEUI n #i .
+	(
+		(
+			// For all commited JOIN sessions running between a device and network server on the term(s) n
+			Commit( DevEUI, JoinEUI, n ) @ i & Role('EndDevice') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running network server on the same term(s)
+			(Ex #j . 
+				(Running( JoinEUI, DevEUI, n) @ j & Role('JoinServer') @ j
+				&
+				#j<#i
+				&
+				//Additionally, there is a unique matching partner instance for each completed run of an
+				//agent, i.e., for each Commit by an agent there is a unique Running by the supposed partner.
+				not(
+					Ex DevEUI1 JoinEUI1 #i1 . ( Commit(DevEUI1, JoinEUI1, n) @ i1 & Role('EndDevice') @ i1 & not(#i1=#i) )
+					)
+				)
+			)
+			|
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+
+lemma auth_secrecy_keys_ED_JS:
+"
+  All DevEUI JoinEUI sec #i. 
+    // somebody claims to have setup a shared secret, 
+    Secret( DevEUI, JoinEUI, sec ) @ i 
+    ==>
+		// implies the adversary does not know it 
+		not( Ex #k. K( sec ) @ k )
+		|
+		// or it is the case that a key has been revealed 
+		(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+"
+
+//the end device can send two distinct join requests:
+lemma oracle_two_join_requests_distinct_nonces_with_accepts: exists-trace
+"
+	Ex DevEUI NS JoinEUI DevNonce1 DevNonce2 #t01 #t02 #t03 #t04.
+	
+	DeviceJoinRequest(DevEUI, NS, JoinEUI, DevNonce1) @ t01
+	&
+	DeviceJoinAccept(DevEUI,NS, JoinEUI, DevNonce1) @ t02
+	&
+	DeviceJoinRequest(DevEUI, NS, JoinEUI, DevNonce2)  @ t03
+		&
+	DeviceJoinAccept(DevEUI,NS, JoinEUI, DevNonce2) @ t04
+	&
+	not(DevNonce1=DevNonce2)
+	&
+	#t01<#t02
+	&
+	#t02<#t03
+	&
+	#t03<#t04
+	&
+	not (Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr)
+	&
+	(All #i #j . OnlyOnce('JoinServer_Commission_EndDevice') @ i & OnlyOnce('JoinServer_Commission_EndDevice') @j ==> #i=#j)
+"
+
+	
+//we can also have a device sending 2 (or more) join requests with different nonces
+
+lemma two_join_requests_distinct_nonces_joinserver: exists-trace
+"
+	Ex JoinEUI DevEUI DevNonce1 ctr_JS1  DevNonce2 ctr_JS2 #t01 #t02
+	.
+	JoinResponse(JoinEUI, DevEUI, DevNonce1, ctr_JS1) @ t01 
+	&
+	JoinResponse(JoinEUI, DevEUI, DevNonce2, ctr_JS2) @ t02
+	& 
+	#t01<#t02
+	&
+	not(DevNonce1=DevNonce2)
+	&
+	not(ctr_JS1=ctr_JS2)
+	&
+	not (Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr)
+	&
+	(All #i #j . OnlyOnce('JoinServer_Commission_EndDevice') @ i & OnlyOnce('JoinServer_Commission_EndDevice') @j ==> #i=#j)
+"
+
+
+
+end

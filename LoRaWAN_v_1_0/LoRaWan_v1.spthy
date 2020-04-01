@@ -1,0 +1,602 @@
+theory LoRaWAN_v1
+begin
+
+/*
+  Protocol:	LoRaWAN_v1
+		   
+This model is based on the LoRAWAN specifications 1.02:
+
+https://lora-alliance.org/sites/default/files/2018-05/lorawan1_0_2-20161012_1398_1.pdf
+
+
+time tamarin-prover LoRaWan_v1.spthy --heuristic=O --oraclename=LoRaWanOracle.py  --prove +RTS -N10 -RTS
+
+==============================================================================
+summary of summaries:
+
+analyzed: LoRaWan_v1.spthy
+
+  correctness (exists-trace): verified (17 steps)
+  two_join_requests_distinct_nonces_device (exists-trace): verified (8 steps)
+  two_join_requests_same_nonce_device (exists-trace): verified (8 steps)
+  oracle_two_join_requests_same_device_nonces_distinct_server_nonces (exists-trace): verified (18 steps)
+  oracle_two_joins_distinct_device_nonces_same_server_nonces (exists-trace): verified (17 steps)
+  oracle_two_joins_same_device_nonces_same_server_nonces (exists-trace): verified (15 steps)
+  oracle_weak_agreement (all-traces): verified (138 steps)
+  non_injective_agreement (all-traces): falsified - found trace (10 steps)
+  Desynchronisation_attack_A3_trace (exists-trace): verified (10 steps)
+  oracle_Desnchronisation_attack_A4_claim (all-traces): falsified - found trace (18 steps)
+  oracle_Desnchronisation_attack_A4_trace (exists-trace): verified (18 steps)
+  injective_agreement (all-traces): falsified - found trace (16 steps)
+  oracle_secrecy_keys (all-traces): verified (308 steps)
+
+==============================================================================
+
+real    4m48.743s
+user    33m12.392s
+sys     15m48.052s
+
+
+
+*/
+
+builtins:   asymmetric-encryption, symmetric-encryption, multiset 
+
+functions:  MAC/2, verifyMAC/3, accept/0, AesKey/1, ClientID/1, Nonce/1
+
+equations:  
+            verifyMAC( m, k, MAC( m, k ) ) = accept
+
+
+// Protocol Restrictions (Axioms)
+
+restriction equality: 	     "All #i    x y    .  Eq( x, y ) @ i ==> x = y"
+
+restriction inequality: 	 "All #i    x      . Neq( x, x ) @ i ==> F"
+
+restriction oneEndDevice: " All NS DevEUI AS #i #j . NetworkServerInit(NS, DevEUI, AS) @ j & NetworkServerInit(NS, DevEUI, AS) @ i ==> (#i=#j)"
+
+restriction maxRequests:
+"All NS requests #i . NSRequests(NS, requests) @ i ==> Ex z. requests + z = '1'+'1'+'1'+'1'+'1'+'1'" //max of 5 request
+
+/*
+restriction LessThan:
+
+"All x y #i. LessThan(x,y) @ #i ==> Ex z. x + z = y"
+
+restriction oneEndDevice: " All #i #j . OnlyOnce('Device_Init') @ j & OnlyOnce('Device_Init') @ i ==> (#i=#j)"
+
+
+*/
+//Create a shared key which is used by both the client and the network server
+
+rule AppServer1_Init:
+	let
+		AS1='AppServer1' //the name of the app server
+		AppEUI='ApplicationID' //some application id that the server is responsible for
+	in
+	[]
+	
+	--[
+		AppServerInit(AS1)
+	]->
+	
+	[!ASInitialised(AS1, AppEUI)]
+
+	
+
+rule EndDevice_Init:
+	let
+		DevEUI=ClientID(~random64)
+	in
+	[
+		Fr(~random64)
+		,!ASInitialised(AS1, AppEUI)
+	]
+	
+	--[
+		EndDeviceInit(DevEUI, AppEUI) //End device (ED) initialised
+		, OnlyOnce('Device_Init')
+	]->
+	
+	[ 
+		ED_Store_00(DevEUI, AppEUI)
+		, DeviceInitialised(DevEUI, AppEUI)
+	]
+
+rule Generate_Root_Key:
+	let
+		AppKey=AesKey(~rootAppKey)
+	in
+	[
+		Fr(~rootAppKey)
+		, DeviceInitialised(DevEUI, AppEUI)
+	]
+
+	--[
+		GeneratedRootKey(DevEUI)
+		, OnlyOnce('Generate_Root_Key')
+	]->
+	
+	[ProvisionAppKey(<DevEUI, AppEUI, AppKey>)]
+
+	
+rule EndDevice_GetRootKey:
+	let
+		AppKey=AesKey(~rootAppKey)
+		DevRnd='D1'+'D2'+'D3'
+	in
+	[
+		ProvisionAppKey(<DevEUI, AppEUI, AppKey>)
+		, ED_Store_00(DevEUI, AppEUI)
+	]
+	
+	--[
+		StoredRootKey(DevEUI)
+	]->
+	
+	[
+		!ED_Store_01(DevEUI, AppEUI, AppKey, DevRnd)
+		, ProvideAppKey(DevEUI, AppEUI, AppKey)
+		, !Ltk_shared(DevEUI, AppEUI, AppKey)
+	]
+	
+
+	
+rule Network_Server_Init:
+	let
+		NS='NetworkServer'
+		NetID='NetID'
+		NSRnd=<'NS1','NS2','NS1','NS2','End'>
+		requests='1'
+		AppKey=AesKey(rootAppKey)
+		DevAddr=Nonce(~devAddr)
+		//oldDevNonce=Nonce('ns_init_odn') //variables to store the previous and current DevNonces
+		curDevNonce=Nonce('ns_init_cdn') //to prevent replay attacks
+		AppNonce=Nonce('ns_init_appnonce') 
+		//ED_Properties=<DevEUI, DevAddr, AS, AppEUI, AppKey, oldDevNonce, curDevNonce, NetID, AppNonce>
+		ED_Properties=<DevEUI, DevAddr, AS, AppEUI, AppKey, curDevNonce, NetID, AppNonce>
+	in
+
+	[
+		ProvideAppKey(DevEUI, AppEUI, AppKey)
+		, !ASInitialised(AS, AppEUI)
+		, Fr(~devAddr)
+		, Fr(~sid)
+	]
+	
+	--[
+		NetworkServerInit(NS, DevEUI, AS)
+		, OnlyOnce('Network_Server_Init')
+	]->
+	
+	[	!Ltk_shared(NS, DevEUI, AppKey)
+		, !NSInit(NS, DevEUI, AS)
+		, NSCounter(~sid, NS, DevEUI, AS,  ED_Properties, requests,NSRnd)
+	]
+
+
+
+rule Shared_Key_Reveal:
+	let
+		Key=AesKey(rootKey)
+	in
+	
+	[!Ltk_shared(ID1, ID2, Key)]
+	
+	--[
+		KeyReveal('Shared_Key_Reveal', ID1)
+	]->
+	
+	[Out(<ID1, Key>)]
+
+
+
+rule Device_Join_Request:
+	let
+		NS='NetworkServer'
+		//recall
+		AppKey=AesKey(~rootAppKey)
+		DevRnd=rnd1+rnd2+rnd3
+		//generate request
+		DevNonce=Nonce(rnd1)
+		tau_c=MAC(<'MHDR', AppEUI, DevEUI, DevNonce>,AppKey)
+		req=<AppEUI, DevEUI, DevNonce, tau_c>
+	in
+	[
+		!ED_Store_01(DevEUI, AppEUI, AppKey, DevRnd)
+	]
+	
+	--[
+		DeviceJoinRequest(DevEUI)
+		, Running(DevEUI, NS, DevNonce)
+		, Role('Device')
+		, OnlyOnce('Device_Request')
+	]->
+	
+	[
+		Out(<'Join_Request', NS,  req>)
+		, ED_Store_02(DevEUI, AppEUI, DevNonce, AppKey)
+	]
+
+	
+rule NS_Receive_JoinRequest_Generate_Response:
+	let
+		NS='NetworkServer'
+		NetID='NetID'
+		rnd1=fst(NSRnd)
+		newNSRnd=snd(NSRnd)
+		//inputs
+		DevEUI=ClientID(id)
+		DevNonce=Nonce(random16)
+		DevAddr=Nonce(devAddr)
+		req=<AppEUI, DevEUI, DevNonce, tau_c>
+		//ED_Properties=<DevEUI, DevAddr, AS, AppEUI, AppKey, oldDevNonce, curDevNonce, NetID, AppNonce>
+		ED_Properties=<DevEUI, DevAddr, AS, AppEUI, AppKey, curDevNonce, NetID, old_AppNonce>
+		
+		//verify tau_c
+		tau_c_dash=<'MHDR', AppEUI, DevEUI, DevNonce>
+		
+		//generate response
+		AppNonce=Nonce(rnd1)
+		//store the previous DevNonce
+		//upd_oldDevNonce=curDevNonce
+		upd_curDevNonce=DevNonce
+		
+		//NB: need to add DevNonce in the response to ensure weak agreement
+		tau_s=MAC(<AppNonce, NetID, DevAddr,'opt_params'>, AppKey)
+		ans=senc(<AppNonce, NetID, DevAddr, 'opt_params', tau_s>, AppKey)
+
+		
+		//compute session keys
+		pad16='pad_with_0s'
+		NwkSkey=senc(<'0x01', AppNonce, NetID, DevNonce, pad16>, AppKey)
+		AppSkey=senc(<'0x02', AppNonce, NetID, DevNonce, pad16>, AppKey)
+		
+		//keep track of the new device props
+		//newED_Properties=<DevEUI, DevAddr, AS, AppEUI, AppKey, upd_oldDevNonce, upd_curDevNonce, NetID, new_AppNonce>
+		newED_Properties=<DevEUI, DevAddr, AS, AppEUI, AppKey, upd_curDevNonce, NetID, AppNonce>
+	in
+	[
+		In(<'Join_Request', NS, req>)
+		, NSCounter(~sid, NS, DevEUI, AS,  ED_Properties, requests, NSRnd)
+		,!NSInit(NS, DevEUI, AS)
+	]
+	
+	--[
+		Eq(verifyMAC(tau_c_dash, AppKey, tau_c), accept)
+		, NSRequests(NS, requests)
+		, Neq(curDevNonce, DevNonce)
+		, Neq(NSRnd,'End')
+		, Neq(AppNonce, old_AppNonce)
+		, NSReceiveJoinRequestGenerateResponse(NS, DevEUI, AS)
+		, SessionID(NS, DevEUI, AS, ~sid)
+		, OnlyOnce('NS_Receive_Request_Generate_Response')
+		, Running(NS, DevEUI, DevNonce)
+		, Running2(NS, DevEUI, DevNonce, AppNonce)
+		, Honest(NS)
+		, Honest(DevEUI)
+		, Role('Server')
+	]->
+	
+		
+	[
+		Out(<'Join_Accept', NS, ans>)
+		, NSCounter(~sid, NS, DevEUI, AS,  newED_Properties, requests+'1', newNSRnd)
+	]
+	
+
+rule Device_Receive_JoinAccept:
+
+	let
+		NS='NetworkServer'
+		//inputs - ED_Store_02
+		DevEUI=ClientID(~random64)
+		
+		//inputs -  ans
+		decoded=sdec(ans,AppKey)
+		AppNonce=fst(decoded)
+		NetID=fst(snd(decoded))
+		DevAddr=fst(snd(snd(decoded)))
+		opt_params=fst(snd(snd(snd(decoded))))
+		tau_s=snd(snd(snd(snd(decoded))))
+		
+		//compute session keys
+		pad16='pad_with_0s'
+		NwkSkey=senc(<'0x01', AppNonce, NetID, DevNonce, pad16>, AppKey)
+		AppSkey=senc(<'0x02', AppNonce, NetID, DevNonce, pad16>, AppKey)
+		
+	in
+	
+	[
+		In(<'Join_Accept', NS, ans>)
+		, ED_Store_02(DevEUI, AppEUI, DevNonce, AppKey)
+	]
+	
+	--[
+		DeviceReceiveJoinAccept(DevEUI, NS)
+		//NB: need to add id_c or rnd_c in the response to ensure weak agreement
+		, Eq(verifyMAC(<AppNonce, NetID, DevAddr,opt_params>, AppKey, tau_s), accept)
+		, OnlyOnce('Device_Receive_JoinAccept')
+		, Commit(DevEUI, NS, DevNonce)
+		, Secret(DevEUI, NS, <NwkSkey,AppSkey>)
+		, Honest(DevEUI)
+		, Honest(NS)
+		, Role('Device')
+	]->
+	
+	[Out('Join_Complete')]
+
+
+// Some sanity checks first
+
+//the protocol can run successfully if no-one misbehaves
+lemma correctness: exists-trace
+"Ex DevEUI AS AppEUI NS #t01 #t02 #t03 #t04 #t05 #t06 #t07 #t08
+
+. //such that
+
+	AppServerInit(AS) @ t01
+	&
+	EndDeviceInit(DevEUI, AppEUI) @ t02
+	&
+	GeneratedRootKey(DevEUI) @ t03
+	&
+	StoredRootKey(DevEUI) @ t04
+	&
+	NetworkServerInit(NS, DevEUI, AS) @ t05
+	&
+	DeviceJoinRequest(DevEUI) @ t06
+	&
+	NSReceiveJoinRequestGenerateResponse(NS,DevEUI, AS) @ t07
+
+	&
+	DeviceReceiveJoinAccept(DevEUI, NS) @ t08
+
+	//we had no key reveal
+	& not( Ex RevealEvent ENTITY #k1 . KeyReveal(RevealEvent, ENTITY)@k1) 
+	
+	&
+	#t01<#t02
+	&
+	#t02<#t03
+	&
+	#t03<#t04
+	&
+	#t04<#t05
+	&
+	#t05<#t06
+	&
+	#t06<#t07
+	&
+	#t07<#t08
+	
+	//restrict the trace further by preventing each rule to fire more than once
+	
+	& 	(All event #i #j . OnlyOnce(event) @ i & OnlyOnce(event) @ j ==> #i=#j)
+"
+
+//we can also have a device sending 2 (or more) join requests with different nonces
+
+lemma two_join_requests_distinct_nonces_device: exists-trace
+"
+	Ex DevEUI NS n1 n2 #t01 #t02
+	.
+	Running(DevEUI, NS, n1) @ t01 & Role('Device') @ t01
+	&
+	Running(DevEUI, NS, n2) @ t02 & Role('Device') @ t02
+	& 
+	#t01<#t02
+	&
+	not(n1=n2)
+"
+
+
+//we can also have a device sending 2 join requests with the same nonce
+
+lemma two_join_requests_same_nonce_device: exists-trace
+"
+	Ex DevEUI NS n #t01 #t02
+	.
+	Running(DevEUI, NS, n) @ t01 & Role('Device') @ t01 
+	&
+	Running(DevEUI, NS, n) @ t02 & Role('Device') @ t02 
+	& 
+	#t01<#t02
+"
+
+//this shows that the server will accept two join request with the same nonce
+//provided the previous nonce has been removed from its internal memory
+//in our set-up the server only stores the last nonce used and thus only prevents
+//consecutive join request from using the same nonce
+
+lemma oracle_two_join_requests_same_device_nonces_distinct_server_nonces: exists-trace
+"
+	Ex AS DevEUI NS sid n m1 m2 #t01 #t02
+	.
+	Running2(NS, DevEUI, n, m1) @ t01 & Role('Server') @ t01 & SessionID(NS, DevEUI, AS, sid)  @ t01
+	&
+	Running2(NS, DevEUI, n, m2) @ t02 & Role('Server') @ t02 & SessionID(NS, DevEUI, AS, sid)  @ t02
+	& 
+	not(m1=m2)
+	&
+	#t01<#t02
+	//we had no key reveal
+	& not( Ex RevealEvent ENTITY #k1 . KeyReveal(RevealEvent, ENTITY)@k1) 
+
+"
+
+//this one shows the server can re-cycle nonces but device nonces are distinct
+
+lemma oracle_two_joins_distinct_device_nonces_same_server_nonces: exists-trace
+"
+	Ex AS sid DevEUI NS n1 n2 m #t01 #t02 .
+
+	Running2(NS, DevEUI, n1, m) @ t01 & Role('Server') @ t01  & SessionID(NS, DevEUI, AS, sid)  @ t01
+	&
+	Running2(NS, DevEUI, n2, m) @ t02 & Role('Server') @ t02  & SessionID(NS, DevEUI, AS, sid)  @ t02
+	& 
+	not(n1=n2)
+	&
+	#t01<#t02 
+	//we had no key reveal
+	& not( Ex RevealEvent ENTITY #k1 . KeyReveal(RevealEvent, ENTITY) @ k1 )
+"
+
+//this shows we can have a successful join with both device and server nonces being the same
+lemma oracle_two_joins_same_device_nonces_same_server_nonces: exists-trace
+"
+	Ex AS sid DevEUI NS n m #t01 #t02 .
+
+	Running2(NS, DevEUI, n, m) @ t01 & Role('Server') @ t01  & SessionID(NS, DevEUI, AS, sid)  @ t01
+	&
+	Running2(NS, DevEUI, n, m) @ t02 & Role('Server') @ t02  & SessionID(NS, DevEUI, AS, sid)  @ t02
+	& 
+	#t01<#t02 
+	//we had no key reveal
+	& not( Ex RevealEvent ENTITY #k1 . KeyReveal(RevealEvent, ENTITY) @ k1 )
+"
+
+// Authentication hierarchy checks according to Lowe //
+
+// This lemma guarantees that whenever the host completes a run of the protocol, apparently with the issuer, 
+// then the issuer has previously been running the protocol, apparently with the host.
+
+lemma oracle_weak_agreement:
+"
+All DevEUI NS n1 #i .
+	(
+		(
+			// For all commited JOIN sessions running between a device and network server on the term(s) n1 
+			Commit( DevEUI, NS, n1 ) @ i & Role('Device') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running network server on some term(s) n2 
+			(Ex n2 #j . Running( NS, DevEUI, n2 ) @ j & Role('Server') @ j) 
+			|
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+// This lemma guarantees that whenever the host completes a run of the protocol, apparently with the issuer, 
+// then the issuer has previously been running the protocol, apparently with the host and the term n
+
+//Note that this is the claim which the Desync attack A3 disproves (see below)
+
+lemma non_injective_agreement:
+"
+All DevEUI NS n #i .
+	(
+		(
+			// For all commited JOIN sessions running between a device and network server on the term(s) n1 
+			Commit( DevEUI, NS, n ) @ i & Role('Device') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running network server on the same term(s)
+			(Ex #j . Running( NS, DevEUI, n ) @ j & Role('Server') @ j) 
+			|
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+
+lemma Desynchronisation_attack_A3_trace: exists-trace
+"
+Ex DevEUI NS n #i . (
+	// There exists a commited JOIN sessions with term n
+	Commit( DevEUI, NS, n ) @ i & Role('Device') @ i
+	&
+	// but there is no running network server on the same term
+	not (Ex #j . Running( NS, DevEUI, n ) @ j & Role('Server') @ j) 
+	&
+	not (Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+	)
+"
+
+lemma oracle_Desnchronisation_attack_A4_claim:
+"
+	All DevEUI NS n1 #t01 #t02
+	.
+	(
+		Running( NS, DevEUI, n1 ) @ t01 & Role('Server') @ t01
+		&
+		Running( NS, DevEUI, n1 ) @ t02 & Role('Server') @ t02
+		==>
+		(
+		(#t01=#t02)
+		|
+		(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & (Honest(Entity) @ t01  | Honest(Entity) @ t02))
+		)
+	)
+"
+
+lemma oracle_Desnchronisation_attack_A4_trace: exists-trace
+"
+	Ex AS DevEUI NS sid n1 #t01 #t02 .
+	// There exists a running JOIN request with term n1
+	Running( NS, DevEUI, n1 ) @ t01 & Role('Server') @ t01 & SessionID(NS, DevEUI, AS, sid) @ t01
+	&
+	//which can repeat
+	Running( NS, DevEUI, n1 ) @ t02 & Role('Server') @ t02 & SessionID(NS, DevEUI, AS, sid)  @ t02
+	&
+	not(#t01=t02)
+"
+
+
+// This lemma guarantees that whenever the host completes a run of the protocol, apparently with the issuer, 
+// then the issuer has previously been running the protocol, apparently with the host and the term n. 
+// Additionally, there is a unique matching partner instance for each completed run of an
+// agent, i.e., for each Commit by an agent there is a unique Running by the supposed partner.
+
+lemma injective_agreement:
+"
+All DevEUI NS n #i .
+	(
+		(
+			// For all commited JOIN sessions running between a device and network server on the term(s) n
+			Commit( DevEUI, NS, n ) @ i & Role('Device') @ i
+		)
+		==>
+        ( 
+			// Implies there exists a running network server on the same term(s)
+			(Ex #j . 
+				(Running( NS, DevEUI, n) @ j & Role('Server') @ j
+				&
+				#j<#i
+				&
+				not(
+					Ex DevEUI_1 #i1 . ( Commit(DevEUI_1, NS, n) @ i1 & Role('Device') @ i1 & not(#i1=#i) )
+					)
+				)
+			)
+			|
+			(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+		)
+	)
+"
+
+
+//Secrecy properties
+
+// The lemma states that whenever a secret action Secret(x) occurs at timepoint i, the adversary
+// does not know x or an agent claimed to be honest at time point i has been compromised at a
+// timepoint r.
+lemma oracle_secrecy_keys:
+"
+  All DevEUI NS sec #i. 
+    // a device claims to have set up the secret network keys with the network server
+    Secret( DevEUI, NS, sec ) @ i 
+    ==>
+		// implies the adversary does not know it 
+		not( Ex #k. K( sec ) @ k )
+		|
+		// or it is the case that a key has been revealed 
+		(Ex RevealEvent Entity #kr . KeyReveal(RevealEvent, Entity) @ kr & Honest(Entity) @ i)
+"
+
+
+end

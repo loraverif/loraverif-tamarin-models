@@ -1,0 +1,3072 @@
+theory LoRaWAN_v1_1_JS_AS_Sync begin
+
+// Function signature and definition of the equational theory E
+
+builtins: multiset
+functions: AesKey/2, ClientID/1, Counter/1, MAC/2, Nonce/1,
+           PD_Wrapper/1, Response/1, SensorData/1, SessionID/1, SessionKey/1,
+           TimeStamp/1, accept/0, adec/2, aenc/2, fst/1, pair/2, pk/1, sdec/2,
+           senc/2, snd/1, verifyMAC/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    fst(<x.1, x.2>) = x.1,
+    sdec(senc(x.1, x.2), x.2) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verifyMAC(m, k, MAC(m, k)) = accept
+
+restriction equality:
+  "∀ #i x y. (Eq( x, y ) @ #i) ⇒ (x = y)"
+  // safety formula
+
+restriction one_server:
+  "∀ #i #j Role SVR1 SVR2.
+    (((EntityInit( Role, SVR1 ) @ #i) ∧
+      (EntityInit( Role, SVR2 ) @ #j)) ∧
+     (¬(Role = 'ED'))) ⇒
+    (#i = #j)"
+  // safety formula
+
+restriction unique_entities:
+  "∀ #i #j Role1 Role2 Entity.
+    ((EntityInit( Role1, Entity ) @ #i) ∧
+     (EntityInit( Role2, Entity ) @ #j)) ⇒
+    (#i = #j)"
+  // safety formula
+
+restriction maxEDJoinRequests:
+  "∀ ED JoinEUI requests #i.
+    (MaxRequests( ED, JoinEUI, requests ) @ #i) ⇒
+    (∃ z. (requests+z) = ('1'+'1'+'1'+'1'))"
+
+restriction maxJSJoinResponses:
+  "∀ ED JoinEUI responses #i.
+    (MaxResponses( ED, JoinEUI, responses ) @ #i) ⇒
+    (∃ z. (responses+z) = ('2'+'2'+'2'+'2'+'2'))"
+
+restriction LessThan:
+  "∀ x y #i. (LessThan( x, y ) @ #i) ⇒ (∃ z. (x+z) = y)"
+
+rule (modulo E) ChanOut_S[color=#ffffff]:
+   [ Out_S( $A, $B, x ), !F_Paired( $A, $B ) ]
+  --[ ChanOut_S( $A, $B, x ) ]->
+   [ Sec( $A, $B, x ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) ChanIn_S[color=#ffffff]:
+   [ Sec( $A, $B, x ) ]
+  --[ ChanIn_S( $A, $B, x ) ]->
+   [ In_S( $A, $B, x ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) JS_Init:
+   [ ]
+  --[ EntityInit( 'JS', $JoinEUI ), OnlyOnce( 'JS_Init' ) ]->
+   [ !JSInitialised( $JoinEUI ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) NS_Init:
+   [ ]
+  --[ EntityInit( 'NS', $NS ), OnlyOnce( 'NS_Init' ) ]->
+   [ !NSInitialised( $NS ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AS_Init:
+   [ ]
+  --[ EntityInit( 'AS', $AS ), OnlyOnce( 'AS_Init' ) ]->
+   [ !ASInitialised( $AS ), !AS_Type( $AS, 'GetKeyFromNS' ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) EndDevice_Init:
+   [ ]
+  --[ EntityInit( 'ED', $DevEUI ), OnlyOnce( 'Device_Init' ) ]->
+   [ EDInitialised( $DevEUI ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Commissioning_Procedure_Out_of_Band:
+   [
+   Fr( ~rootNwkKey ), Fr( ~rootAppKey ), Fr( ~JSASKey ),
+   !JSInitialised( $JoinEUI ), !NSInitialised( $NS ),
+   !ASInitialised( $AS ), !AS_Type( $AS, ASType ),
+   EDInitialised( $DevEUI )
+   ]
+  --[
+  Linked_ED_With_JS_NS_AS( $DevEUI, $JoinEUI, $NS, $AS ),
+  OnlyOnce( 'JoinSever_Commission_EndDevice' )
+  ]->
+   [
+   EDCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                   AesKey('Nwk', ~rootNwkKey), AesKey('App', ~rootAppKey)
+   ),
+   !NSCommissioned( $DevEUI, $JoinEUI, $NS, $AS ),
+   ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                   AesKey('JSAS', ~JSASKey)
+   ),
+   ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS, ASType ),
+   JSCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                   AesKey('Nwk', ~rootNwkKey), AesKey('App', ~rootAppKey),
+                   AesKey('JSAS', ~JSASKey)
+   ),
+   !F_Paired( $NS, $JoinEUI ), !F_Paired( $JoinEUI, $NS1 ),
+   !F_Paired( $AS, $JoinEUI ), !F_Paired( $JoinEUI, $AS )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) EndDevice_Commissioned:
+   [
+   EDCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                   AesKey('Nwk', ~rootNwkKey), AesKey('App', ~rootAppKey)
+   )
+   ]
+  --[
+  CommissionCompleted( 'ED', $DevEUI, $JoinEUI, $NS, $AS ),
+  CounterInit( $DevEUI, '1' ), OnlyOnce( 'EndDevice_Commissioned' )
+  ]->
+   [
+   ED_State_01( $DevEUI, $JoinEUI, $NS, $AS, '1' ),
+   CheckCtrJS( $DevEUI, '2' ),
+   !Ltk_shared( $DevEUI, $JoinEUI, AesKey('Nwk', ~rootNwkKey) ),
+   !Ltk_shared( $DevEUI, $JoinEUI, AesKey('App', ~rootAppKey) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) JoinServer_Commissioned:
+   [
+   JSCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                   AesKey('Nwk', ~rootNwkKey), AesKey('App', ~rootAppKey),
+                   AesKey('JSAS', ~JSASKey)
+   )
+   ]
+  --[
+  CommissionCompleted( 'JS', $JoinEUI, $DevEUI, $NS, $AS ),
+  OnlyOnce( 'JoinServer_Commissioned' )
+  ]->
+   [
+   JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                <'1', '2', Nonce('undefined'), Nonce('undefined'), 
+                 SessionKey('undefined'), SessionKey('undefined'), 
+                 SessionKey('undefined'), SessionKey('undefined'), 
+                 SessionKey('undefined')>
+   ),
+   !Ltk_shared( $JoinEUI, $DevEUI, AesKey('Nwk', ~rootNwkKey) ),
+   !Ltk_shared( $JoinEUI, $DevEUI, AesKey('App', ~rootAppKey) ),
+   !Ltk_shared( $JoinEUI, <$AS, $DevEUI>, AesKey('JSAS', ~JSASKey) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Device_Join_Request:
+   [
+   ED_State_01( $DevEUI, $JoinEUI, $NS, $AS, ctr_ED ),
+   !Ltk_shared( $DevEUI, $JoinEUI, AesKey('Nwk', ~rootNwkKey) )
+   ]
+  --[
+  DeviceJoinRequest( $DevEUI, $NS, $JoinEUI, ('1'+ctr_ED) ),
+  MaxRequests( $DevEUI, $JoinEUI, ('1'+ctr_ED) ),
+  Role( 'EndDevice' ), OnlyOnce( 'Device_Join_Request' )
+  ]->
+   [
+   Out( <'Join_Request', $NS, $JoinEUI, $DevEUI, 
+         Counter(('1'+ctr_ED)), 
+         MAC(<'MHDR', $JoinEUI, $DevEUI, ('1'+ctr_ED)>,
+             AesKey('Nwk', ~rootNwkKey))
+        >
+   ),
+   ED_State_01( $DevEUI, $JoinEUI, $NS, $AS, ('1'+ctr_ED) ),
+   ED_State_02( $DevEUI, $JoinEUI, $NS, $AS, ('1'+ctr_ED) )
+   ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) NetworkServer_Receive_JoinRequest_Forward_To_JS:
+   [
+   In( <'Join_Request', $NS, $JoinEUI, $DevEUI, Counter(DevNonce), 
+        tau_c>
+   ),
+   !NSCommissioned( $DevEUI, $JoinEUI, $NS, $AS )
+   ]
+  --[
+  NetworkServerReceiveJoinRequest( $NS, $DevEUI, $JoinEUI ),
+  OnlyOnce( 'NetworkServer_Receive_JoinRequest_Forward_To_JS' )
+  ]->
+   [
+   Out_S( $NS, $JoinEUI,
+          <'Join_Request', $JoinEUI, $DevEUI, Counter(DevNonce), tau_c>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) JoinServer_Receive_JoinRequest_Generate_Response_with_Key:
+   [
+   In_S( $NS, $JoinEUI,
+         <'Join_Request', $JoinEUI, $DevEUI, Counter(DevNonce), tau_c>
+   ),
+   JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                <ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                 FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+   ),
+   !Ltk_shared( $JoinEUI, $DevEUI, AesKey('Nwk', ~rootNwkKey) ),
+   !Ltk_shared( $JoinEUI, $DevEUI, AesKey('App', ~rootAppKey) ),
+   !Ltk_shared( $JoinEUI, <$AS, $DevEUI>, JS_AS_Key ),
+   !AS_Type( $AS, 'GetKeyFromNS' ), Fr( ~rnd32DevAddr ),
+   Fr( ~AppSKey_SID )
+   ]
+  --[
+  Eq( verifyMAC(<'MHDR', $JoinEUI, $DevEUI, DevNonce>,
+                AesKey('Nwk', ~rootNwkKey), tau_c),
+      accept
+  ),
+  LessThan( ctr_ED_in, DevNonce ),
+  OnlyOnce( 'JoinServer_Receive_JoinRequest_Generate_Response' ),
+  GenerateJoinResponse( $JoinEUI, $NS, $DevEUI ),
+  JoinResponse( $JoinEUI, $DevEUI, DevNonce, ('2'+ctr_JS_in) ),
+  Running( $JoinEUI, $DevEUI,
+           <
+            SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('App', ~rootAppKey))), 
+            SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey)))
+           >
+  ),
+  Commit_Confree( 'Join_ED_JS_confree', $DevEUI, $JoinEUI,
+                  SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                   $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                  AesKey('App', ~rootAppKey)))
+  ),
+  Honest( $JoinEUI ), Honest( $DevEUI ), Role( 'JoinServer' ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+               SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('Nwk', ~rootNwkKey)))
+  ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+               SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('Nwk', ~rootNwkKey)))
+  ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+               SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('Nwk', ~rootNwkKey)))
+  ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $AS>,
+               SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('App', ~rootAppKey)))
+  ),
+  Requests( $DevEUI, DevNonce )
+  ]->
+   [
+   Out_S( $JoinEUI, $NS,
+          <
+           <'Join_Accept', $DevEUI, 
+            senc(<Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', 
+                  Nonce(~rnd32DevAddr), 'opt_params', 
+                  MAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', 
+                       Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', Nonce(~rnd32DevAddr), 
+                       'opt_params'>,
+                      SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                      AesKey('Nwk', ~rootNwkKey))))
+                 >,
+                 AesKey('Nwk', ~rootNwkKey))
+           >, 
+           <'SessionKeys', $DevEUI, $NS, 
+            SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey)))
+           >, 
+           'EncAppSKey', 
+           senc(<
+                 SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('App', ~rootAppKey))), 
+                 $JoinEUI, $DevEUI, $AS>,
+                JS_AS_Key)
+          >
+   ),
+   JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                <DevNonce, ('2'+ctr_JS_in), Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                 Nonce(~rnd32DevAddr), 
+                 SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('App', ~rootAppKey)))
+                >
+   )
+   ]
+
+  // loop breakers: [0,1]
+  /*
+  rule (modulo AC) JoinServer_Receive_JoinRequest_Generate_Response_with_Key:
+     [
+     In_S( $NS, $JoinEUI,
+           <'Join_Request', $JoinEUI, $DevEUI, Counter(DevNonce), tau_c>
+     ),
+     JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                  <ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                   FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+     ),
+     !Ltk_shared( $JoinEUI, $DevEUI, AesKey('Nwk', ~rootNwkKey) ),
+     !Ltk_shared( $JoinEUI, $DevEUI, AesKey('App', ~rootAppKey) ),
+     !Ltk_shared( $JoinEUI, <$AS, $DevEUI>, JS_AS_Key ),
+     !AS_Type( $AS, 'GetKeyFromNS' ), Fr( ~rnd32DevAddr ),
+     Fr( ~AppSKey_SID )
+     ]
+    --[
+    Eq( z, accept ), LessThan( ctr_ED_in, DevNonce ),
+    OnlyOnce( 'JoinServer_Receive_JoinRequest_Generate_Response' ),
+    GenerateJoinResponse( $JoinEUI, $NS, $DevEUI ),
+    JoinResponse( $JoinEUI, $DevEUI, DevNonce, ('2'+ctr_JS_in) ),
+    Running( $JoinEUI, $DevEUI,
+             <
+              SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('App', ~rootAppKey))), 
+              SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey)))
+             >
+    ),
+    Commit_Confree( 'Join_ED_JS_confree', $DevEUI, $JoinEUI,
+                    SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                     $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                    AesKey('App', ~rootAppKey)))
+    ),
+    Honest( $JoinEUI ), Honest( $DevEUI ), Role( 'JoinServer' ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+                 SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey)))
+    ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+                 SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey)))
+    ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+                 SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey)))
+    ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $AS>,
+                 SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('App', ~rootAppKey)))
+    ),
+    Requests( $DevEUI, DevNonce )
+    ]->
+     [
+     Out_S( $JoinEUI, $NS,
+            <
+             <'Join_Accept', $DevEUI, 
+              senc(<Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', 
+                    Nonce(~rnd32DevAddr), 'opt_params', 
+                    MAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', 
+                         Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', Nonce(~rnd32DevAddr), 
+                         'opt_params'>,
+                        SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                        AesKey('Nwk', ~rootNwkKey))))
+                   >,
+                   AesKey('Nwk', ~rootNwkKey))
+             >, 
+             <'SessionKeys', $DevEUI, $NS, 
+              SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey)))
+             >, 
+             'EncAppSKey', 
+             senc(<
+                   SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('App', ~rootAppKey))), 
+                   $JoinEUI, $DevEUI, $AS>,
+                  JS_AS_Key)
+            >
+     ),
+     JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                  <DevNonce, ('2'+ctr_JS_in), Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                   Nonce(~rnd32DevAddr), 
+                   SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('App', ~rootAppKey)))
+                  >
+     )
+     ]
+    variants (modulo AC)
+    1. $DevEUI
+             = $DevEUI.50
+       $JoinEUI
+             = $JoinEUI.51
+       ~rootNwkKey
+             = ~rootNwkKey.56
+       DevNonce
+             = DevNonce.59
+       tau_c = MAC(<'MHDR', $JoinEUI.51, $DevEUI.50, DevNonce.59>,
+                   AesKey('Nwk', ~rootNwkKey.56))
+       z     = accept
+    
+    2. $DevEUI
+             = $DevEUI.59
+       $JoinEUI
+             = $JoinEUI.60
+       ~rootNwkKey
+             = ~rootNwkKey.65
+       DevNonce
+             = DevNonce.68
+       tau_c = tau_c.77
+       z     = verifyMAC(<'MHDR', $JoinEUI.60, $DevEUI.59, DevNonce.68>,
+                         AesKey('Nwk', ~rootNwkKey.65), tau_c.77)
+    // loop breakers: [0,1]
+  */
+
+rule (modulo E) JoinServer_Receive_JoinRequest_Generate_Response_with_SessionID:
+   [
+   In_S( $NS, $JoinEUI,
+         <'Join_Request', $JoinEUI, $DevEUI, Counter(DevNonce), tau_c>
+   ),
+   JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                <ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                 FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+   ),
+   !Ltk_shared( $JoinEUI, $DevEUI, AesKey('Nwk', ~rootNwkKey) ),
+   !Ltk_shared( $JoinEUI, $DevEUI, AesKey('App', ~rootAppKey) ),
+   !Ltk_shared( $JoinEUI, <$AS, $DevEUI>, JS_AS_Key ),
+   !AS_Type( $AS, 'GetKeyFromJS' ), Fr( ~rnd32DevAddr ),
+   Fr( ~AppSKey_SID )
+   ]
+  --[
+  Eq( verifyMAC(<'MHDR', $JoinEUI, $DevEUI, DevNonce>,
+                AesKey('Nwk', ~rootNwkKey), tau_c),
+      accept
+  ),
+  LessThan( ctr_ED_in, DevNonce ),
+  OnlyOnce( 'JoinServer_Receive_JoinRequest_Generate_Response' ),
+  GenerateJoinResponse( $JoinEUI, $NS, $DevEUI ),
+  JoinResponse( $JoinEUI, $DevEUI, DevNonce, ('2'+ctr_JS_in) ),
+  Running( $JoinEUI, $DevEUI,
+           <
+            SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('App', ~rootAppKey))), 
+            SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey)))
+           >
+  ),
+  Commit_Confree( 'Join_ED_JS_confree', $DevEUI, $JoinEUI,
+                  SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                   $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                  AesKey('App', ~rootAppKey)))
+  ),
+  Honest( $JoinEUI ), Honest( $DevEUI ), Role( 'JoinServer' ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+               SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('Nwk', ~rootNwkKey)))
+  ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+               SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('Nwk', ~rootNwkKey)))
+  ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+               SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('Nwk', ~rootNwkKey)))
+  ),
+  !Ltk_shared( $JoinEUI, <$DevEUI, $AS>,
+               SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                $JoinEUI, DevNonce, 'pad_with_0s'>,
+                               AesKey('App', ~rootAppKey)))
+  ),
+  Requests( $DevEUI, DevNonce )
+  ]->
+   [
+   Out_S( $JoinEUI, $NS,
+          <
+           <'Join_Accept', $DevEUI, 
+            senc(<Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', 
+                  Nonce(~rnd32DevAddr), 'opt_params', 
+                  MAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', 
+                       Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', Nonce(~rnd32DevAddr), 
+                       'opt_params'>,
+                      SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                      AesKey('Nwk', ~rootNwkKey))))
+                 >,
+                 AesKey('Nwk', ~rootNwkKey))
+           >, 
+           <'SessionKeys', $DevEUI, $NS, 
+            SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey))), 
+            SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                             $JoinEUI, DevNonce, 'pad_with_0s'>,
+                            AesKey('Nwk', ~rootNwkKey)))
+           >, 
+           'sessionID', SessionID(~AppSKey_SID)>
+   ),
+   JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                <DevNonce, ('2'+ctr_JS_in), Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                 Nonce(~rnd32DevAddr), 
+                 SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey))), 
+                 SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('App', ~rootAppKey)))
+                >
+   ),
+   Out_S( $JoinEUI, $AS,
+          <SessionID(~AppSKey_SID), 
+           SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                            $JoinEUI, DevNonce, 'pad_with_0s'>,
+                           AesKey('App', ~rootAppKey)))
+          >
+   )
+   ]
+
+  // loop breakers: [0,1]
+  /*
+  rule (modulo AC) JoinServer_Receive_JoinRequest_Generate_Response_with_SessionID:
+     [
+     In_S( $NS, $JoinEUI,
+           <'Join_Request', $JoinEUI, $DevEUI, Counter(DevNonce), tau_c>
+     ),
+     JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                  <ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                   FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+     ),
+     !Ltk_shared( $JoinEUI, $DevEUI, AesKey('Nwk', ~rootNwkKey) ),
+     !Ltk_shared( $JoinEUI, $DevEUI, AesKey('App', ~rootAppKey) ),
+     !Ltk_shared( $JoinEUI, <$AS, $DevEUI>, JS_AS_Key ),
+     !AS_Type( $AS, 'GetKeyFromJS' ), Fr( ~rnd32DevAddr ),
+     Fr( ~AppSKey_SID )
+     ]
+    --[
+    Eq( z, accept ), LessThan( ctr_ED_in, DevNonce ),
+    OnlyOnce( 'JoinServer_Receive_JoinRequest_Generate_Response' ),
+    GenerateJoinResponse( $JoinEUI, $NS, $DevEUI ),
+    JoinResponse( $JoinEUI, $DevEUI, DevNonce, ('2'+ctr_JS_in) ),
+    Running( $JoinEUI, $DevEUI,
+             <
+              SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('App', ~rootAppKey))), 
+              SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey)))
+             >
+    ),
+    Commit_Confree( 'Join_ED_JS_confree', $DevEUI, $JoinEUI,
+                    SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                     $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                    AesKey('App', ~rootAppKey)))
+    ),
+    Honest( $JoinEUI ), Honest( $DevEUI ), Role( 'JoinServer' ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+                 SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey)))
+    ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+                 SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey)))
+    ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $NS>,
+                 SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('Nwk', ~rootNwkKey)))
+    ),
+    !Ltk_shared( $JoinEUI, <$DevEUI, $AS>,
+                 SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                  $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                 AesKey('App', ~rootAppKey)))
+    ),
+    Requests( $DevEUI, DevNonce )
+    ]->
+     [
+     Out_S( $JoinEUI, $NS,
+            <
+             <'Join_Accept', $DevEUI, 
+              senc(<Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', 
+                    Nonce(~rnd32DevAddr), 'opt_params', 
+                    MAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', 
+                         Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 'NetID', Nonce(~rnd32DevAddr), 
+                         'opt_params'>,
+                        SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                        AesKey('Nwk', ~rootNwkKey))))
+                   >,
+                   AesKey('Nwk', ~rootNwkKey))
+             >, 
+             <'SessionKeys', $DevEUI, $NS, 
+              SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey))), 
+              SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                               $JoinEUI, DevNonce, 'pad_with_0s'>,
+                              AesKey('Nwk', ~rootNwkKey)))
+             >, 
+             'sessionID', SessionID(~AppSKey_SID)>
+     ),
+     JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                  <DevNonce, ('2'+ctr_JS_in), Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                   Nonce(~rnd32DevAddr), 
+                   SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x03', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))), 
+                   SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                                    $JoinEUI, DevNonce, 'pad_with_0s'>,
+                                   AesKey('App', ~rootAppKey)))
+                  >
+     ),
+     Out_S( $JoinEUI, $AS,
+            <SessionID(~AppSKey_SID), 
+             SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+ctr_JS_in)>), 
+                              $JoinEUI, DevNonce, 'pad_with_0s'>,
+                             AesKey('App', ~rootAppKey)))
+            >
+     )
+     ]
+    variants (modulo AC)
+    1. $DevEUI
+             = $DevEUI.50
+       $JoinEUI
+             = $JoinEUI.51
+       ~rootNwkKey
+             = ~rootNwkKey.56
+       DevNonce
+             = DevNonce.59
+       tau_c = MAC(<'MHDR', $JoinEUI.51, $DevEUI.50, DevNonce.59>,
+                   AesKey('Nwk', ~rootNwkKey.56))
+       z     = accept
+    
+    2. $DevEUI
+             = $DevEUI.59
+       $JoinEUI
+             = $JoinEUI.60
+       ~rootNwkKey
+             = ~rootNwkKey.65
+       DevNonce
+             = DevNonce.68
+       tau_c = tau_c.77
+       z     = verifyMAC(<'MHDR', $JoinEUI.60, $DevEUI.59, DevNonce.68>,
+                         AesKey('Nwk', ~rootNwkKey.65), tau_c.77)
+    // loop breakers: [0,1]
+  */
+
+rule (modulo E) NetworkServer_Receive_JoinResponse_Forward_To_ED:
+   [
+   In_S( $JoinEUI, $NS,
+         <<'Join_Accept', $DevEUI, ans>, 
+          <'SessionKeys', $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey, NwkSEncKey
+          >, 
+          ASDetails>
+   )
+   ]
+  --[
+  NetworkServerReceiveJoinResponse( $NS, $JoinEUI, $DevEUI ),
+  OnlyOnce( 'NetworkServer_Receive_JoinResponse_Forward_To_ED' )
+  ]->
+   [
+   Out( <'Join_Accept', $NS, $DevEUI, Response(ans)> ),
+   NS_State_01( $NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey,
+                NwkSEncKey, ASDetails
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Device_Receive_JoinAccept:
+   [
+   In( <'Join_Accept', $NS, $DevEUI, 
+        Response(senc(<Nonce(<$DevEUI_in, ctr_JS_in>), NetID, DevAddr, 
+                       'opt_params', tau_s>,
+                      NwkKey))
+       >
+   ),
+   ED_State_02( $DevEUI, $JoinEUI, $NS, $AS, DevNonce ),
+   !Ltk_shared( $DevEUI, $JoinEUI, AesKey('Nwk', ~rootNwkKey) ),
+   !Ltk_shared( $DevEUI, $JoinEUI, AesKey('App', ~rootAppKey) ),
+   CheckCtrJS( $DevEUI, ctr_JS )
+   ]
+  --[
+  DeviceJoinAccept( $DevEUI, $NS, $JoinEUI, DevNonce ),
+  Eq( verifyMAC(<'0xFF', $JoinEUI, DevNonce, 'MHDR', 
+                 Nonce(<$DevEUI_in, ctr_JS_in>), NetID, DevAddr, 'opt_params'>,
+                SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                                AesKey('Nwk', ~rootNwkKey))),
+                tau_s),
+      accept
+  ),
+  OnlyOnce( 'Device_Receive_JoinAccept' ),
+  LessThan( ctr_JS, ctr_JS_in ),
+  Commit( $DevEUI, $JoinEUI,
+          <
+           SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey))), 
+           SessionKey(senc(<'0x03', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey))), 
+           SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey))), 
+           SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('App', ~rootAppKey))), 
+           SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey)))
+          >
+  ),
+  Secret( $DevEUI, $JoinEUI,
+          <
+           SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey))), 
+           SessionKey(senc(<'0x03', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey))), 
+           SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey))), 
+           SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                            DevNonce, 'pad_with_0s'>,
+                           AesKey('App', ~rootAppKey))), 
+           SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                           AesKey('Nwk', ~rootNwkKey)))
+          >
+  ),
+  Honest( $DevEUI ), Honest( $JoinEUI ), Role( 'EndDevice' ),
+  MaxResponses( $DevEUI, $JoinEUI, ctr_JS )
+  ]->
+   [
+   CheckCtrJS( $DevEUI, ctr_JS_in ),
+   ED_State_03( $DevEUI, $JoinEUI, $NS, $AS, DevNonce,
+                Nonce(<$DevEUI_in, ctr_JS_in>),
+                SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('Nwk', ~rootNwkKey))),
+                SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('Nwk', ~rootNwkKey))),
+                SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('App', ~rootAppKey)))
+   ),
+   !Ltk_shared( $DevEUI, $NS,
+                SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('Nwk', ~rootNwkKey)))
+   ),
+   !Ltk_shared( $DevEUI, $NS,
+                SessionKey(senc(<'0x03', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('Nwk', ~rootNwkKey)))
+   ),
+   !Ltk_shared( $DevEUI, $NS,
+                SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('Nwk', ~rootNwkKey)))
+   ),
+   !Ltk_shared( $DevEUI, $AS,
+                SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                 DevNonce, 'pad_with_0s'>,
+                                AesKey('App', ~rootAppKey)))
+   )
+   ]
+
+  // loop breaker: [4]
+  /*
+  rule (modulo AC) Device_Receive_JoinAccept:
+     [
+     In( <'Join_Accept', $NS, $DevEUI, 
+          Response(senc(<Nonce(<$DevEUI_in, ctr_JS_in>), NetID, DevAddr, 
+                         'opt_params', tau_s>,
+                        NwkKey))
+         >
+     ),
+     ED_State_02( $DevEUI, $JoinEUI, $NS, $AS, DevNonce ),
+     !Ltk_shared( $DevEUI, $JoinEUI, AesKey('Nwk', ~rootNwkKey) ),
+     !Ltk_shared( $DevEUI, $JoinEUI, AesKey('App', ~rootAppKey) ),
+     CheckCtrJS( $DevEUI, ctr_JS )
+     ]
+    --[
+    DeviceJoinAccept( $DevEUI, $NS, $JoinEUI, DevNonce ),
+    Eq( z, accept ), OnlyOnce( 'Device_Receive_JoinAccept' ),
+    LessThan( ctr_JS, ctr_JS_in ),
+    Commit( $DevEUI, $JoinEUI,
+            <
+             SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey))), 
+             SessionKey(senc(<'0x03', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey))), 
+             SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey))), 
+             SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('App', ~rootAppKey))), 
+             SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey)))
+            >
+    ),
+    Secret( $DevEUI, $JoinEUI,
+            <
+             SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey))), 
+             SessionKey(senc(<'0x03', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey))), 
+             SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey))), 
+             SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                              DevNonce, 'pad_with_0s'>,
+                             AesKey('App', ~rootAppKey))), 
+             SessionKey(senc(<'0x06', $DevEUI, 'pad_with_0s'>,
+                             AesKey('Nwk', ~rootNwkKey)))
+            >
+    ),
+    Honest( $DevEUI ), Honest( $JoinEUI ), Role( 'EndDevice' ),
+    MaxResponses( $DevEUI, $JoinEUI, ctr_JS )
+    ]->
+     [
+     CheckCtrJS( $DevEUI, ctr_JS_in ),
+     ED_State_03( $DevEUI, $JoinEUI, $NS, $AS, DevNonce,
+                  Nonce(<$DevEUI_in, ctr_JS_in>),
+                  SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('Nwk', ~rootNwkKey))),
+                  SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('Nwk', ~rootNwkKey))),
+                  SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('App', ~rootAppKey)))
+     ),
+     !Ltk_shared( $DevEUI, $NS,
+                  SessionKey(senc(<'0x01', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('Nwk', ~rootNwkKey)))
+     ),
+     !Ltk_shared( $DevEUI, $NS,
+                  SessionKey(senc(<'0x03', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('Nwk', ~rootNwkKey)))
+     ),
+     !Ltk_shared( $DevEUI, $NS,
+                  SessionKey(senc(<'0x04', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('Nwk', ~rootNwkKey)))
+     ),
+     !Ltk_shared( $DevEUI, $AS,
+                  SessionKey(senc(<'0x02', Nonce(<$DevEUI_in, ctr_JS_in>), $JoinEUI, 
+                                   DevNonce, 'pad_with_0s'>,
+                                  AesKey('App', ~rootAppKey)))
+     )
+     ]
+    variants (modulo AC)
+    1. $DevEUI
+             = $DevEUI.37
+       $DevEUI_in
+             = $DevEUI_in.38
+       $JoinEUI
+             = $JoinEUI.39
+       ~rootNwkKey
+             = ~rootNwkKey.42
+       DevAddr
+             = DevAddr.43
+       DevNonce
+             = DevNonce.44
+       NetID = NetID.45
+       ctr_JS_in
+             = ctr_JS_in.48
+       tau_s = MAC(<'0xFF', $JoinEUI.39, DevNonce.44, 'MHDR', 
+                    Nonce(<$DevEUI_in.38, ctr_JS_in.48>), NetID.45, DevAddr.43, 
+                    'opt_params'>,
+                   SessionKey(senc(<'0x06', $DevEUI.37, 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey.42))))
+       z     = accept
+    
+    2. $DevEUI
+             = $DevEUI.38
+       $DevEUI_in
+             = $DevEUI_in.39
+       $JoinEUI
+             = $JoinEUI.40
+       ~rootNwkKey
+             = ~rootNwkKey.43
+       DevAddr
+             = DevAddr.44
+       DevNonce
+             = DevNonce.45
+       NetID = NetID.46
+       ctr_JS_in
+             = ctr_JS_in.49
+       tau_s = tau_s.50
+       z     = verifyMAC(<'0xFF', $JoinEUI.40, DevNonce.45, 'MHDR', 
+                          Nonce(<$DevEUI_in.39, ctr_JS_in.49>), NetID.46, DevAddr.44, 
+                          'opt_params'>,
+                         SessionKey(senc(<'0x06', $DevEUI.38, 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey.43))),
+                         tau_s.50)
+    // loop breaker: [4]
+  */
+
+rule (modulo E) Device_Send_Message_To_App_Server:
+   [
+   Fr( ~rndData ),
+   ED_State_03( $DevEUI, $JoinEUI, $NS, $AS, DevNonce, JoinNonce,
+                SessionKey(senc(<'0x01', JoinNonce, $JoinEUI, DevNonce, 
+                                 'pad_with_0s'>,
+                                NwkKey)),
+                SessionKey(senc(<'0x04', JoinNonce, $JoinEUI, DevNonce, 
+                                 'pad_with_0s'>,
+                                NwkKey)),
+                SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                                 'pad_with_0s'>,
+                                AppKey))
+   )
+   ]
+  --[
+  DeviceSendsData( $DevEUI, $NS, $AS, SensorData(~rndData),
+                   senc(<$DevEUI, SensorData(~rndData)>,
+                        SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                                         'pad_with_0s'>,
+                                        AppKey)))
+  ),
+  Running( $DevEUI, $AS,
+           SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                            'pad_with_0s'>,
+                           AppKey))
+  ),
+  Send( $DevEUI, $AS,
+        senc(<$DevEUI, SensorData(~rndData)>,
+             SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                              'pad_with_0s'>,
+                             AppKey))),
+        SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                         'pad_with_0s'>,
+                        AppKey))
+  ),
+  Honest( $DevEUI ), Honest( $AS ), Role( 'EndDevice' ),
+  OnlyOnce( 'Device_Send_Message_To_App_Server' )
+  ]->
+   [
+   Out( <$DevEUI, $NS, 
+         senc(<$DevEUI, 
+               senc(<$DevEUI, SensorData(~rndData)>,
+                    SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                                     'pad_with_0s'>,
+                                    AppKey))), 
+               MAC(<$DevEUI, $NS, 
+                    senc(<$DevEUI, SensorData(~rndData)>,
+                         SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                                          'pad_with_0s'>,
+                                         AppKey)))
+                   >,
+                   SessionKey(senc(<'0x01', JoinNonce, $JoinEUI, DevNonce, 
+                                    'pad_with_0s'>,
+                                   NwkKey)))
+              >,
+              SessionKey(senc(<'0x04', JoinNonce, $JoinEUI, DevNonce, 
+                               'pad_with_0s'>,
+                              NwkKey))), 
+         MAC(<$DevEUI, $NS, 
+              senc(<$DevEUI, SensorData(~rndData)>,
+                   SessionKey(senc(<'0x02', JoinNonce, $JoinEUI, DevNonce, 
+                                    'pad_with_0s'>,
+                                   AppKey)))
+             >,
+             SessionKey(senc(<'0x01', JoinNonce, $JoinEUI, DevNonce, 
+                              'pad_with_0s'>,
+                             NwkKey))), 
+         'SendDataToAS'>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) NS_Get_Data_From_ED_Forward_to_AS_with_Key:
+   [
+   In( <$DevEUI, $NS, senc(<$DevEUI, encData, tau_ed>, NwkSEncKey), 
+        tau_ed, 'SendDataToAS'>
+   ),
+   NS_State_01( $NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey,
+                NwkSEncKey, <'EncAppSKey', encAppSKey>
+   ),
+   !AS_Type( $AS, 'GetKeyFromNS' )
+   ]
+  --[
+  Eq( verifyMAC(<$DevEUI, $NS, encData>, FNwkSIntKey, tau_ed), accept
+  ),
+  ReceivedDataFromEDForAS( $NS, $DevEUI, $AS, encData ),
+  OnlyOnce( 'NS_Get_Data_Forward_to_AS' )
+  ]->
+   [
+   Out( <$NS, $AS, $DevEUI, PD_Wrapper(encData), 
+         PD_Wrapper(encAppSKey), 'ForwardDataToAS_with_Key'>
+   ),
+   NS_State_02( $NS, $JoinEUI, $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey,
+                NwkSEncKey
+   )
+   ]
+
+  /*
+  rule (modulo AC) NS_Get_Data_From_ED_Forward_to_AS_with_Key:
+     [
+     In( <$DevEUI, $NS, senc(<$DevEUI, encData, tau_ed>, NwkSEncKey), 
+          tau_ed, 'SendDataToAS'>
+     ),
+     NS_State_01( $NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey,
+                  NwkSEncKey, <'EncAppSKey', encAppSKey>
+     ),
+     !AS_Type( $AS, 'GetKeyFromNS' )
+     ]
+    --[
+    Eq( z, accept ),
+    ReceivedDataFromEDForAS( $NS, $DevEUI, $AS, encData ),
+    OnlyOnce( 'NS_Get_Data_Forward_to_AS' )
+    ]->
+     [
+     Out( <$NS, $AS, $DevEUI, PD_Wrapper(encData), 
+           PD_Wrapper(encAppSKey), 'ForwardDataToAS_with_Key'>
+     ),
+     NS_State_02( $NS, $JoinEUI, $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey,
+                  NwkSEncKey
+     )
+     ]
+    variants (modulo AC)
+    1. $DevEUI
+             = $DevEUI.24
+       $NS   = $NS.26
+       FNwkSIntKey
+             = FNwkSIntKey.27
+       encData
+             = encData.31
+       tau_ed
+             = MAC(<$DevEUI.24, $NS.26, encData.31>, FNwkSIntKey.27)
+       z     = accept
+    
+    2. $DevEUI
+             = $DevEUI.25
+       $NS   = $NS.27
+       FNwkSIntKey
+             = FNwkSIntKey.28
+       encData
+             = encData.32
+       tau_ed
+             = tau_ed.33
+       z     = verifyMAC(<$DevEUI.25, $NS.27, encData.32>, FNwkSIntKey.28,
+                         tau_ed.33)
+  */
+
+rule (modulo E) NS_Get_Data_From_ED_Forward_to_AS_with_SessionID:
+   [
+   In( <$DevEUI, $NS, senc(<$DevEUI, encData, tau_ed>, NwkSEncKey), 
+        tau_ed, 'SendDataToAS'>
+   ),
+   NS_State_01( $NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey,
+                NwkSEncKey, <'sessionID', sessionID>
+   ),
+   !AS_Type( $AS, 'GetKeyFromJS' )
+   ]
+  --[
+  Eq( verifyMAC(<$DevEUI, $NS, encData>, FNwkSIntKey, tau_ed), accept
+  ),
+  ReceivedDataFromEDForAS( $NS, $DevEUI, $AS, encData ),
+  OnlyOnce( 'NS_Get_Data_Forward_to_AS' )
+  ]->
+   [
+   Out( <$NS, $AS, $DevEUI, PD_Wrapper(encData), sessionID, 
+         'ForwardDataToAS_with_SessionID'>
+   ),
+   NS_State_02( $NS, $JoinEUI, $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey,
+                NwkSEncKey
+   )
+   ]
+
+  /*
+  rule (modulo AC) NS_Get_Data_From_ED_Forward_to_AS_with_SessionID:
+     [
+     In( <$DevEUI, $NS, senc(<$DevEUI, encData, tau_ed>, NwkSEncKey), 
+          tau_ed, 'SendDataToAS'>
+     ),
+     NS_State_01( $NS, $JoinEUI, $DevEUI, FNwkSIntKey, SNwkSIntKey,
+                  NwkSEncKey, <'sessionID', sessionID>
+     ),
+     !AS_Type( $AS, 'GetKeyFromJS' )
+     ]
+    --[
+    Eq( z, accept ),
+    ReceivedDataFromEDForAS( $NS, $DevEUI, $AS, encData ),
+    OnlyOnce( 'NS_Get_Data_Forward_to_AS' )
+    ]->
+     [
+     Out( <$NS, $AS, $DevEUI, PD_Wrapper(encData), sessionID, 
+           'ForwardDataToAS_with_SessionID'>
+     ),
+     NS_State_02( $NS, $JoinEUI, $DevEUI, $NS, FNwkSIntKey, SNwkSIntKey,
+                  NwkSEncKey
+     )
+     ]
+    variants (modulo AC)
+    1. $DevEUI
+             = $DevEUI.23
+       $NS   = $NS.25
+       FNwkSIntKey
+             = FNwkSIntKey.26
+       encData
+             = encData.29
+       tau_ed
+             = MAC(<$DevEUI.23, $NS.25, encData.29>, FNwkSIntKey.26)
+       z     = accept
+    
+    2. $DevEUI
+             = $DevEUI.25
+       $NS   = $NS.27
+       FNwkSIntKey
+             = FNwkSIntKey.28
+       encData
+             = encData.31
+       tau_ed
+             = tau_ed.33
+       z     = verifyMAC(<$DevEUI.25, $NS.27, encData.31>, FNwkSIntKey.28,
+                         tau_ed.33)
+  */
+
+rule (modulo E) AS_Receive_Data_withKey_decoding:
+   [
+   In( <$NS, $AS, $DevEUI, 
+        PD_Wrapper(senc(<$DevEUI, data>, AppSKey)), 
+        PD_Wrapper(senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                        AesKey('JSAS', ~JSASKey))), 
+        'ForwardDataToAS_with_Key'>
+   ),
+   ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                   AesKey('JSAS', ~JSASKey)
+   )
+   ]
+  --[
+  ASReceivedDataFromEDWithDecoding( $AS, $NS, $DevEUI, data ),
+  Running_Confree( 'Join_AS_ED_confree', $AS, $DevEUI, AppSKey ),
+  Commit( $AS, $DevEUI, AppSKey ),
+  Received( $AS, $DevEUI, senc(<$DevEUI, data>, AppSKey), AppSKey ),
+  Honest( $AS ), Honest( $DevEUI ), Honest( $JoinEUI ),
+  Role( 'AppServer' ), OnlyOnce( 'AS_Receive_Data_withKey_decoding' )
+  ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AS_Receive_Data_withSessionID_decoding:
+   [
+   In( <$NS, $AS, $DevEUI, 
+        PD_Wrapper(senc(<$DevEUI, data>, AppSKey)), 
+        SessionID(AppSKey_SID), 'ForwardDataToAS_with_SessionID'>
+   ),
+   ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS, 'GetKeyFromJS' ),
+   In_S( $JoinEUI, $AS, <SessionID(AppSKey_SID), AppSKey> )
+   ]
+  --[
+  ASReceivedDataFromEDWithDecoding( $AS, $NS, $DevEUI, data ),
+  Running_Confree( 'Join_AS_ED_confree', $AS, $DevEUI, AppSKey ),
+  Commit( $AS, $DevEUI, AppSKey ),
+  Received( $AS, $DevEUI, senc(<$DevEUI, data>, AppSKey), AppSKey ),
+  Honest( $AS ), Honest( $DevEUI ), Honest( $JoinEUI ),
+  Role( 'AppServer' ),
+  OnlyOnce( 'AS_Receive_Data_withSessionID_decoding' )
+  ]->
+   [ ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Shared_Key_Reveal1:
+   [ !Ltk_shared( $ID1, $ID2, AesKey(type, rndSeed) ) ]
+  --[ KeyReveal( 'Shared_Key_Reveal', $ID1 ) ]->
+   [ Out( <$ID1, AesKey(type, rndSeed)> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Shared_Key_Reveal2:
+   [
+   !Ltk_shared( $ID1, $ID2,
+                SessionKey(senc(data, AesKey(type, rndSeed)))
+   )
+   ]
+  --[ KeyReveal( 'Shared_Key_Reveal', $ID1 ) ]->
+   [ Out( <$ID1, SessionKey(senc(data, AesKey(type, rndSeed)))> ) ]
+
+  /* has exactly the trivial AC variant */
+
+lemma Only_One_JS:
+  all-traces
+  "∀ JS1 JS2 #t01 #t02.
+    ((EntityInit( 'JS', JS1 ) @ #t01) ∧
+     (EntityInit( 'JS', JS2 ) @ #t02)) ⇒
+    (#t01 = #t02)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ JS1 JS2 #t01 #t02.
+  (EntityInit( 'JS', JS1 ) @ #t01) ∧ (EntityInit( 'JS', JS2 ) @ #t02)
+ ∧
+  ¬(#t01 = #t02)"
+*/
+by sorry
+
+lemma Only_One_NS:
+  all-traces
+  "∀ NS1 NS2 #t01 #t02.
+    ((EntityInit( 'NS', NS1 ) @ #t01) ∧
+     (EntityInit( 'NS', NS2 ) @ #t02)) ⇒
+    (#t01 = #t02)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ NS1 NS2 #t01 #t02.
+  (EntityInit( 'NS', NS1 ) @ #t01) ∧ (EntityInit( 'NS', NS2 ) @ #t02)
+ ∧
+  ¬(#t01 = #t02)"
+*/
+by sorry
+
+lemma Only_One_AS:
+  all-traces
+  "∀ AS1 AS2 #t01 #t02.
+    ((EntityInit( 'AS', AS1 ) @ #t01) ∧
+     (EntityInit( 'AS', AS2 ) @ #t02)) ⇒
+    (#t01 = #t02)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ AS1 AS2 #t01 #t02.
+  (EntityInit( 'AS', AS1 ) @ #t01) ∧ (EntityInit( 'AS', AS2 ) @ #t02)
+ ∧
+  ¬(#t01 = #t02)"
+*/
+by sorry
+
+lemma Two_Commissioned_End_Devices:
+  exists-trace
+  "∃ ED1 ED2 JoinEUI NS AS #t01 #t02.
+    (((CommissionCompleted( 'ED', ED1, JoinEUI, NS, AS ) @ #t01) ∧
+      (CommissionCompleted( 'ED', ED2, JoinEUI, NS, AS ) @ #t02)) ∧
+     (#t01 < #t02)) ∧
+    (¬(ED1 = ED2))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ ED1 ED2 JoinEUI NS AS #t01 #t02.
+  (CommissionCompleted( 'ED', ED1, JoinEUI, NS, AS ) @ #t01) ∧
+  (CommissionCompleted( 'ED', ED2, JoinEUI, NS, AS ) @ #t02)
+ ∧
+  (#t01 < #t02) ∧ (¬(ED1 = ED2))"
+*/
+by sorry
+
+lemma correctness:
+  exists-trace
+  "∃ JoinEUI AS NS DevEUI #t01 #t02 #t03 #t04 #t05 #t06 #t07 #t08
+     DevNonce #t09 #t10 #t11 #t12 #t13 data encData #t14 #t15.
+    ((((((((((((((((((((((((((((((EntityInit( 'JS', JoinEUI ) @ #t01) ∧
+                                 (EntityInit( 'NS', NS ) @ #t02)) ∧
+                                (EntityInit( 'AS', AS ) @ #t03)) ∧
+                               (EntityInit( 'ED', DevEUI ) @ #t04)) ∧
+                              (Linked_ED_With_JS_NS_AS( DevEUI, JoinEUI, NS, AS ) @ #t05)) ∧
+                             (CommissionCompleted( 'ED', DevEUI, JoinEUI, NS, AS ) @ #t06)) ∧
+                            (CommissionCompleted( 'JS', JoinEUI, DevEUI, NS, AS ) @ #t07)) ∧
+                           (DeviceJoinRequest( DevEUI, NS, JoinEUI, DevNonce ) @ #t08)) ∧
+                          (NetworkServerReceiveJoinRequest( NS, DevEUI, JoinEUI ) @ #t09)) ∧
+                         (GenerateJoinResponse( JoinEUI, NS, DevEUI ) @ #t10)) ∧
+                        (NetworkServerReceiveJoinResponse( NS, JoinEUI, DevEUI ) @ #t11)) ∧
+                       (DeviceJoinAccept( DevEUI, NS, JoinEUI, DevNonce ) @ #t12)) ∧
+                      (DeviceSendsData( DevEUI, NS, AS, data, encData ) @ #t13)) ∧
+                     (ReceivedDataFromEDForAS( NS, DevEUI, AS, encData ) @ #t14)) ∧
+                    (ASReceivedDataFromEDWithDecoding( AS, NS, DevEUI, data
+                     ) @ #t15)) ∧
+                   (¬(∃ RevealEvent ENTITY #k1.
+                       KeyReveal( RevealEvent, ENTITY ) @ #k1))) ∧
+                  (#t01 < #t02)) ∧
+                 (#t02 < #t03)) ∧
+                (#t03 < #t04)) ∧
+               (#t04 < #t05)) ∧
+              (#t05 < #t06)) ∧
+             (#t06 < #t07)) ∧
+            (#t07 < #t08)) ∧
+           (#t08 < #t09)) ∧
+          (#t09 < #t10)) ∧
+         (#t10 < #t11)) ∧
+        (#t11 < #t12)) ∧
+       (#t12 < #t13)) ∧
+      (#t13 < #t14)) ∧
+     (#t14 < #t15)) ∧
+    (∀ event #i #j.
+      ((OnlyOnce( event ) @ #i) ∧ (OnlyOnce( event ) @ #j)) ⇒ (#i = #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ JoinEUI AS NS DevEUI #t01 #t02 #t03 #t04 #t05 #t06 #t07 #t08
+   DevNonce #t09 #t10 #t11 #t12 #t13 data encData #t14 #t15.
+  (EntityInit( 'JS', JoinEUI ) @ #t01) ∧
+  (EntityInit( 'NS', NS ) @ #t02) ∧
+  (EntityInit( 'AS', AS ) @ #t03) ∧
+  (EntityInit( 'ED', DevEUI ) @ #t04) ∧
+  (Linked_ED_With_JS_NS_AS( DevEUI, JoinEUI, NS, AS ) @ #t05) ∧
+  (CommissionCompleted( 'ED', DevEUI, JoinEUI, NS, AS ) @ #t06) ∧
+  (CommissionCompleted( 'JS', JoinEUI, DevEUI, NS, AS ) @ #t07) ∧
+  (DeviceJoinRequest( DevEUI, NS, JoinEUI, DevNonce ) @ #t08) ∧
+  (NetworkServerReceiveJoinRequest( NS, DevEUI, JoinEUI ) @ #t09) ∧
+  (GenerateJoinResponse( JoinEUI, NS, DevEUI ) @ #t10) ∧
+  (NetworkServerReceiveJoinResponse( NS, JoinEUI, DevEUI ) @ #t11) ∧
+  (DeviceJoinAccept( DevEUI, NS, JoinEUI, DevNonce ) @ #t12) ∧
+  (DeviceSendsData( DevEUI, NS, AS, data, encData ) @ #t13) ∧
+  (ReceivedDataFromEDForAS( NS, DevEUI, AS, encData ) @ #t14) ∧
+  (ASReceivedDataFromEDWithDecoding( AS, NS, DevEUI, data ) @ #t15)
+ ∧
+  (∀ RevealEvent ENTITY #k1.
+    (KeyReveal( RevealEvent, ENTITY ) @ #k1) ⇒ ⊥) ∧
+  (#t01 < #t02) ∧
+  (#t02 < #t03) ∧
+  (#t03 < #t04) ∧
+  (#t04 < #t05) ∧
+  (#t05 < #t06) ∧
+  (#t06 < #t07) ∧
+  (#t07 < #t08) ∧
+  (#t08 < #t09) ∧
+  (#t09 < #t10) ∧
+  (#t10 < #t11) ∧
+  (#t11 < #t12) ∧
+  (#t12 < #t13) ∧
+  (#t13 < #t14) ∧
+  (#t14 < #t15) ∧
+  (∀ event #i #j.
+    (OnlyOnce( event ) @ #i) ∧ (OnlyOnce( event ) @ #j) ⇒ #i = #j)"
+*/
+by sorry
+
+lemma AS_confusion_freeness_1:
+  all-traces
+  "∀ DevEUIa AppSvr AppSKey1 #i.
+    ((Running_Confree( 'Join_AS_ED_confree', AppSvr, DevEUIa, AppSKey1
+      ) @ #i) ∧
+     (Role( 'AppServer' ) @ #i)) ⇒
+    ((∃ JoinEUI #p.
+       (Commit_Confree( 'Join_ED_JS_confree', DevEUIa, JoinEUI, AppSKey1
+        ) @ #p) ∧
+       (Role( 'JoinServer' ) @ #p)) ∨
+     (∃ RevealEvent Entity #kr1.
+       (KeyReveal( RevealEvent, Entity ) @ #kr1) ∧
+       (Honest( Entity ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ DevEUIa AppSvr AppSKey1 #i.
+  (Running_Confree( 'Join_AS_ED_confree', AppSvr, DevEUIa, AppSKey1
+   ) @ #i) ∧
+  (Role( 'AppServer' ) @ #i)
+ ∧
+  (∀ JoinEUI #p.
+    (Commit_Confree( 'Join_ED_JS_confree', DevEUIa, JoinEUI, AppSKey1
+     ) @ #p) ∧
+    (Role( 'JoinServer' ) @ #p)
+   ⇒
+    ⊥) ∧
+  (∀ RevealEvent Entity #kr1.
+    (KeyReveal( RevealEvent, Entity ) @ #kr1) ∧ (Honest( Entity ) @ #i)
+   ⇒
+    ⊥)"
+*/
+simplify
+solve( Role( 'AppServer' ) @ #i )
+  case AS_Receive_Data_withKey_decoding
+  solve( ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                         AesKey('JSAS', ~JSASKey)
+         ) ▶₁ #i )
+    case Commissioning_Procedure_Out_of_Band
+    solve( Running_Confree( 'Join_AS_ED_confree', AppSvr, DevEUIa,
+                            AppSKey1
+           ) @ #i )
+      case AS_Receive_Data_withKey_decoding
+      solve( !KU( PD_Wrapper(senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                                  AesKey('JSAS', ~JSASKey)))
+             ) @ #vk.9 )
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_1
+        solve( In_S( $NS.1, $JoinEUI,
+                     <'Join_Request', $JoinEUI, $DevEUI.1, Counter((ctr_ED_in+z)), 
+                      MAC(<'MHDR', $JoinEUI, $DevEUI.1, (ctr_ED_in+z)>,
+                          AesKey('Nwk', ~rootNwkKey.1))
+                     >
+               ) ▶₀ #vr.13 )
+          case ChanIn_S
+          solve( !KU( senc(<$DevEUI.1, 
+                            senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, AesKey('JSAS', ~JSASKey)), 
+                            MAC(<$DevEUI.1, $NS, 
+                                 senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, AesKey('JSAS', ~JSASKey))>,
+                                SessionKey(senc(<'0x01', Nonce(<$DevEUI.1, ('2'+ctr_JS_in)>), 
+                                                 $JoinEUI, (ctr_ED_in+z), 'pad_with_0s'>,
+                                                AesKey('Nwk', ~rootNwkKey.1))))
+                           >,
+                           SessionKey(senc(<'0x04', Nonce(<$DevEUI.1, ('2'+ctr_JS_in)>), 
+                                            $JoinEUI, (ctr_ED_in+z), 'pad_with_0s'>,
+                                           AesKey('Nwk', ~rootNwkKey.1))))
+                 ) @ #vk.17 )
+            case c_senc
+            solve( !KU( senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                             AesKey('JSAS', ~JSASKey))
+                   ) @ #vk.31 )
+              case c_senc
+              solve( !KU( AesKey('JSAS', ~JSASKey) ) @ #vk.35 )
+                case c_AesKey
+                by solve( !KU( ~JSASKey ) @ #vk.38 )
+              qed
+            qed
+          qed
+        qed
+      next
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_2
+        by solve( In_S( $AS, $JoinEUI,
+                        <'Join_Request', $JoinEUI, $DevEUI.1, Counter((ctr_ED_in+z)), 
+                         MAC(<'MHDR', $JoinEUI, $DevEUI.1, (ctr_ED_in+z)>,
+                             AesKey('Nwk', ~rootNwkKey.1))
+                        >
+                  ) ▶₀ #vr.13 )
+      next
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_3
+        by contradiction /* from formulas */
+      next
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_4
+        by contradiction /* from formulas */
+      next
+        case c_PD_Wrapper
+        solve( !KU( senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                         AesKey('JSAS', ~JSASKey))
+               ) @ #vk.11 )
+          case c_senc
+          solve( !KU( AesKey('JSAS', ~JSASKey) ) @ #vk.14 )
+            case c_AesKey
+            by solve( !KU( ~JSASKey ) @ #vk.19 )
+          qed
+        qed
+      qed
+    qed
+  qed
+next
+  case AS_Receive_Data_withSessionID_decoding
+  by solve( In_S( $JoinEUI, $AS, <SessionID(AppSKey_SID), AppSKey>
+            ) ▶₂ #i )
+qed
+
+lemma auth_weak_agreement_ED_JS:
+  all-traces
+  "∀ DevEUI JoinEUI n1 #i.
+    ((Commit( DevEUI, JoinEUI, n1 ) @ #i) ∧
+     (Role( 'EndDevice' ) @ #i)) ⇒
+    ((∃ n2 #j.
+       (Running( JoinEUI, DevEUI, n2 ) @ #j) ∧
+       (Role( 'JoinServer' ) @ #j)) ∨
+     (∃ RevealEvent Entity #kr.
+       (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+       (Honest( Entity ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ DevEUI JoinEUI n1 #i.
+  (Commit( DevEUI, JoinEUI, n1 ) @ #i) ∧ (Role( 'EndDevice' ) @ #i)
+ ∧
+  (∀ n2 #j.
+    (Running( JoinEUI, DevEUI, n2 ) @ #j) ∧ (Role( 'JoinServer' ) @ #j)
+   ⇒
+    ⊥) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ∧ (Honest( Entity ) @ #i)
+   ⇒
+    ⊥)"
+*/
+by sorry
+
+lemma auth_weak_agreement_ED_AS:
+  all-traces
+  "∀ AppSvr DevEUI n1 #i.
+    ((Commit( AppSvr, DevEUI, n1 ) @ #i) ∧
+     (Role( 'AppServer' ) @ #i)) ⇒
+    ((∃ n2 #j.
+       (Running( DevEUI, AppSvr, n2 ) @ #j) ∧
+       (Role( 'EndDevice' ) @ #j)) ∨
+     (∃ RevealEvent Entity #kr.
+       (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+       (Honest( Entity ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ AppSvr DevEUI n1 #i.
+  (Commit( AppSvr, DevEUI, n1 ) @ #i) ∧ (Role( 'AppServer' ) @ #i)
+ ∧
+  (∀ n2 #j.
+    (Running( DevEUI, AppSvr, n2 ) @ #j) ∧ (Role( 'EndDevice' ) @ #j)
+   ⇒
+    ⊥) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ∧ (Honest( Entity ) @ #i)
+   ⇒
+    ⊥)"
+*/
+by sorry
+
+lemma auth_non_injective_agreement_ED_JS:
+  all-traces
+  "∀ DevEUI JoinEUI n1 #i.
+    ((Commit( DevEUI, JoinEUI, n1 ) @ #i) ∧
+     (Role( 'EndDevice' ) @ #i)) ⇒
+    ((∃ #j.
+       (Running( JoinEUI, DevEUI, n1 ) @ #j) ∧
+       (Role( 'JoinServer' ) @ #j)) ∨
+     (∃ RevealEvent Entity #kr.
+       (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+       (Honest( Entity ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ DevEUI JoinEUI n1 #i.
+  (Commit( DevEUI, JoinEUI, n1 ) @ #i) ∧ (Role( 'EndDevice' ) @ #i)
+ ∧
+  (∀ #j.
+    (Running( JoinEUI, DevEUI, n1 ) @ #j) ∧ (Role( 'JoinServer' ) @ #j)
+   ⇒
+    ⊥) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ∧ (Honest( Entity ) @ #i)
+   ⇒
+    ⊥)"
+*/
+by sorry
+
+lemma auth_injective_agreement_ED_JS:
+  all-traces
+  "∀ DevEUI JoinEUI n #i.
+    ((Commit( DevEUI, JoinEUI, n ) @ #i) ∧
+     (Role( 'EndDevice' ) @ #i)) ⇒
+    ((∃ #j.
+       (((Running( JoinEUI, DevEUI, n ) @ #j) ∧
+         (Role( 'JoinServer' ) @ #j)) ∧
+        (#j < #i)) ∧
+       (¬(∃ DevEUI1 JoinEUI1 #i1.
+           ((Commit( DevEUI1, JoinEUI1, n ) @ #i1) ∧
+            (Role( 'EndDevice' ) @ #i1)) ∧
+           (¬(#i1 = #i))))) ∨
+     (∃ RevealEvent Entity #kr.
+       (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+       (Honest( Entity ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ DevEUI JoinEUI n #i.
+  (Commit( DevEUI, JoinEUI, n ) @ #i) ∧ (Role( 'EndDevice' ) @ #i)
+ ∧
+  (∀ #j.
+    (Running( JoinEUI, DevEUI, n ) @ #j) ∧ (Role( 'JoinServer' ) @ #j)
+   ⇒
+    ((¬(#j < #i)) ∨
+     (∃ DevEUI1 JoinEUI1 #i1.
+       (Commit( DevEUI1, JoinEUI1, n ) @ #i1) ∧
+       (Role( 'EndDevice' ) @ #i1)
+      ∧
+       ¬(#i1 = #i)))) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ∧ (Honest( Entity ) @ #i)
+   ⇒
+    ⊥)"
+*/
+by sorry
+
+lemma auth_secrecy_keys_ED_JS:
+  all-traces
+  "∀ DevEUI JoinEUI sec #i.
+    (Secret( DevEUI, JoinEUI, sec ) @ #i) ⇒
+    ((¬(∃ #k. K( sec ) @ #k)) ∨
+     (∃ RevealEvent Entity #kr.
+       (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+       (Honest( Entity ) @ #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ DevEUI JoinEUI sec #i.
+  (Secret( DevEUI, JoinEUI, sec ) @ #i)
+ ∧
+  (∃ #k. (K( sec ) @ #k)) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ∧ (Honest( Entity ) @ #i)
+   ⇒
+    ⊥)"
+*/
+by sorry
+
+lemma oracle_two_join_requests_distinct_nonces_with_accepts:
+  exists-trace
+  "∃ DevEUI NS JoinEUI DevNonce1 DevNonce2 #t01 #t02 #t03 #t04.
+    (((((((((DeviceJoinRequest( DevEUI, NS, JoinEUI, DevNonce1
+             ) @ #t01) ∧
+            (DeviceJoinAccept( DevEUI, NS, JoinEUI, DevNonce1 ) @ #t02)) ∧
+           (DeviceJoinRequest( DevEUI, NS, JoinEUI, DevNonce2 ) @ #t03)) ∧
+          (DeviceJoinAccept( DevEUI, NS, JoinEUI, DevNonce2 ) @ #t04)) ∧
+         (¬(DevNonce1 = DevNonce2))) ∧
+        (#t01 < #t02)) ∧
+       (#t02 < #t03)) ∧
+      (#t03 < #t04)) ∧
+     (¬(∃ RevealEvent Entity #kr.
+         KeyReveal( RevealEvent, Entity ) @ #kr))) ∧
+    (∀ #i #j.
+      ((OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #i) ∧
+       (OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #j)) ⇒
+      (#i = #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ DevEUI NS JoinEUI DevNonce1 DevNonce2 #t01 #t02 #t03 #t04.
+  (DeviceJoinRequest( DevEUI, NS, JoinEUI, DevNonce1 ) @ #t01) ∧
+  (DeviceJoinAccept( DevEUI, NS, JoinEUI, DevNonce1 ) @ #t02) ∧
+  (DeviceJoinRequest( DevEUI, NS, JoinEUI, DevNonce2 ) @ #t03) ∧
+  (DeviceJoinAccept( DevEUI, NS, JoinEUI, DevNonce2 ) @ #t04)
+ ∧
+  (¬(DevNonce1 = DevNonce2)) ∧
+  (#t01 < #t02) ∧
+  (#t02 < #t03) ∧
+  (#t03 < #t04) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ⇒ ⊥) ∧
+  (∀ #i #j.
+    (OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #i) ∧
+    (OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #j)
+   ⇒
+    #i = #j)"
+*/
+by sorry
+
+lemma two_join_requests_distinct_nonces_joinserver:
+  exists-trace
+  "∃ JoinEUI DevEUI DevNonce1 ctr_JS1 DevNonce2 ctr_JS2 #t01 #t02.
+    ((((((JoinResponse( JoinEUI, DevEUI, DevNonce1, ctr_JS1 ) @ #t01) ∧
+         (JoinResponse( JoinEUI, DevEUI, DevNonce2, ctr_JS2 ) @ #t02)) ∧
+        (#t01 < #t02)) ∧
+       (¬(DevNonce1 = DevNonce2))) ∧
+      (¬(ctr_JS1 = ctr_JS2))) ∧
+     (¬(∃ RevealEvent Entity #kr.
+         KeyReveal( RevealEvent, Entity ) @ #kr))) ∧
+    (∀ #i #j.
+      ((OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #i) ∧
+       (OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #j)) ⇒
+      (#i = #j))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ JoinEUI DevEUI DevNonce1 ctr_JS1 DevNonce2 ctr_JS2 #t01 #t02.
+  (JoinResponse( JoinEUI, DevEUI, DevNonce1, ctr_JS1 ) @ #t01) ∧
+  (JoinResponse( JoinEUI, DevEUI, DevNonce2, ctr_JS2 ) @ #t02)
+ ∧
+  (#t01 < #t02) ∧
+  (¬(DevNonce1 = DevNonce2)) ∧
+  (¬(ctr_JS1 = ctr_JS2)) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ⇒ ⊥) ∧
+  (∀ #i #j.
+    (OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #i) ∧
+    (OnlyOnce( 'JoinSever_Commission_EndDevice' ) @ #j)
+   ⇒
+    #i = #j)"
+*/
+by sorry
+
+lemma able_to_decode_ED_AS:
+  all-traces
+  "∀ DevEUI AS encData AppSKey #t02.
+    ((Received( AS, DevEUI, encData, AppSKey ) @ #t02) ∧
+     (Role( 'AppServer' ) @ #t02)) ⇒
+    ((∃ #t01.
+       (Send( DevEUI, AS, encData, AppSKey ) @ #t01) ∧
+       (Role( 'EndDevice' ) @ #t01)) ∨
+     (∃ RevealEvent Entity #kr.
+       (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+       (Honest( Entity ) @ #t02)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ DevEUI AS encData AppSKey #t02.
+  (Received( AS, DevEUI, encData, AppSKey ) @ #t02) ∧
+  (Role( 'AppServer' ) @ #t02)
+ ∧
+  (∀ #t01.
+    (Send( DevEUI, AS, encData, AppSKey ) @ #t01) ∧
+    (Role( 'EndDevice' ) @ #t01)
+   ⇒
+    ⊥) ∧
+  (∀ RevealEvent Entity #kr.
+    (KeyReveal( RevealEvent, Entity ) @ #kr) ∧
+    (Honest( Entity ) @ #t02)
+   ⇒
+    ⊥)"
+*/
+simplify
+solve( Received( AS, DevEUI, encData, AppSKey ) @ #t02 )
+  case AS_Receive_Data_withKey_decoding
+  solve( ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                         AesKey('JSAS', ~JSASKey)
+         ) ▶₁ #t02 )
+    case Commissioning_Procedure_Out_of_Band
+    solve( Role( 'AppServer' ) @ #t02 )
+      case AS_Receive_Data_withKey_decoding
+      solve( !KU( PD_Wrapper(senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                                  AesKey('JSAS', ~JSASKey)))
+             ) @ #vk.9 )
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_1
+        solve( In_S( $NS.1, $JoinEUI,
+                     <'Join_Request', $JoinEUI, $DevEUI.1, Counter((ctr_ED_in+z)), 
+                      MAC(<'MHDR', $JoinEUI, $DevEUI.1, (ctr_ED_in+z)>,
+                          AesKey('Nwk', ~rootNwkKey.1))
+                     >
+               ) ▶₀ #vr.13 )
+          case ChanIn_S
+          solve( !KU( senc(<$DevEUI.1, 
+                            senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, AesKey('JSAS', ~JSASKey)), 
+                            MAC(<$DevEUI.1, $NS, 
+                                 senc(<AppSKey, $JoinEUI, $DevEUI, $AS>, AesKey('JSAS', ~JSASKey))>,
+                                SessionKey(senc(<'0x01', Nonce(<$DevEUI.1, ('2'+ctr_JS_in)>), 
+                                                 $JoinEUI, (ctr_ED_in+z), 'pad_with_0s'>,
+                                                AesKey('Nwk', ~rootNwkKey.1))))
+                           >,
+                           SessionKey(senc(<'0x04', Nonce(<$DevEUI.1, ('2'+ctr_JS_in)>), 
+                                            $JoinEUI, (ctr_ED_in+z), 'pad_with_0s'>,
+                                           AesKey('Nwk', ~rootNwkKey.1))))
+                 ) @ #vk.17 )
+            case c_senc
+            solve( !KU( senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                             AesKey('JSAS', ~JSASKey))
+                   ) @ #vk.31 )
+              case c_senc
+              solve( !KU( AesKey('JSAS', ~JSASKey) ) @ #vk.35 )
+                case c_AesKey
+                by solve( !KU( ~JSASKey ) @ #vk.38 )
+              qed
+            qed
+          qed
+        qed
+      next
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_2
+        by solve( In_S( $AS, $JoinEUI,
+                        <'Join_Request', $JoinEUI, $DevEUI.1, Counter((ctr_ED_in+z)), 
+                         MAC(<'MHDR', $JoinEUI, $DevEUI.1, (ctr_ED_in+z)>,
+                             AesKey('Nwk', ~rootNwkKey.1))
+                        >
+                  ) ▶₀ #vr.13 )
+      next
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_3
+        solve( In_S( $NS.1, $JoinEUI,
+                     <'Join_Request', $JoinEUI, $DevEUI, Counter((ctr_ED_in+z)), 
+                      MAC(<'MHDR', $JoinEUI, $DevEUI, (ctr_ED_in+z)>,
+                          AesKey('Nwk', ~rootNwkKey))
+                     >
+               ) ▶₀ #vr.14 )
+          case ChanIn_S
+          solve( JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                              <ctr_ED_in, ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                               FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+                 ) ▶₁ #vr.14 )
+            case JoinServer_Commissioned
+            solve( !KU( PD_Wrapper(senc(<$DevEUI, data>,
+                                        SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), 
+                                                         $JoinEUI, ('1'+z), 'pad_with_0s'>,
+                                                        AesKey('App', ~rootAppKey)))))
+                   ) @ #vk.15 )
+              case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_1
+              solve( In_S( $NS.1, $JoinEUI,
+                           <'Join_Request', $JoinEUI, $DevEUI.3, Counter((ctr_ED_in+z.1)), 
+                            MAC(<'MHDR', $JoinEUI, $DevEUI.3, (ctr_ED_in+z.1)>,
+                                AesKey('Nwk', ~rootNwkKey.3))
+                           >
+                     ) ▶₀ #vr.31 )
+                case ChanIn_S
+                solve( !KU( senc(<$DevEUI.1, 
+                                  senc(<$DevEUI, data>,
+                                       SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), 
+                                                        $JoinEUI, ('1'+z), 'pad_with_0s'>,
+                                                       AesKey('App', ~rootAppKey)))), 
+                                  MAC(<$DevEUI.1, $NS, 
+                                       senc(<$DevEUI, data>,
+                                            SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), 
+                                                             $JoinEUI, ('1'+z), 'pad_with_0s'>,
+                                                            AesKey('App', ~rootAppKey))))
+                                      >,
+                                      SessionKey(senc(<'0x01', Nonce(<$DevEUI.1, ('2'+ctr_JS_in)>), 
+                                                       $JoinEUI, (ctr_ED_in+z.1), 'pad_with_0s'>,
+                                                      AesKey('Nwk', ~rootNwkKey.3))))
+                                 >,
+                                 SessionKey(senc(<'0x04', Nonce(<$DevEUI.1, ('2'+ctr_JS_in)>), 
+                                                  $JoinEUI, (ctr_ED_in+z.1), 'pad_with_0s'>,
+                                                 AesKey('Nwk', ~rootNwkKey.3))))
+                       ) @ #vk.36 )
+                  case Device_Send_Message_To_App_Server_case_1
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                         ) ▶₀ #vr.44 )
+                    case EndDevice_Commissioned
+                    by contradiction /* from formulas */
+                  qed
+                next
+                  case Device_Send_Message_To_App_Server_case_2
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                         ) ▶₀ #vr.44 )
+                    case Device_Join_Request
+                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                           ) ▶₀ #vr.46 )
+                      case EndDevice_Commissioned
+                      by contradiction /* from formulas */
+                    qed
+                  qed
+                next
+                  case Device_Send_Message_To_App_Server_case_3
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                         ) ▶₀ #vr.44 )
+                    case Device_Join_Request
+                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                           ) ▶₀ #vr.46 )
+                      case EndDevice_Commissioned
+                      by contradiction /* from formulas */
+                    qed
+                  qed
+                next
+                  case c_senc
+                  solve( !KU( senc(<$DevEUI, data>,
+                                   SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), $JoinEUI, 
+                                                    ('1'+z), 'pad_with_0s'>,
+                                                   AesKey('App', ~rootAppKey))))
+                         ) @ #vk.44 )
+                    case Device_Send_Message_To_App_Server_case_1
+                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                           ) ▶₀ #vr.50 )
+                      case EndDevice_Commissioned
+                      by contradiction /* from formulas */
+                    qed
+                  next
+                    case Device_Send_Message_To_App_Server_case_2
+                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                           ) ▶₀ #vr.50 )
+                      case Device_Join_Request
+                      solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                             ) ▶₀ #vr.52 )
+                        case EndDevice_Commissioned
+                        by contradiction /* from formulas */
+                      qed
+                    qed
+                  next
+                    case c_senc
+                    solve( !KU( SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), 
+                                                 $JoinEUI, ('1'+z), 'pad_with_0s'>,
+                                                AesKey('App', ~rootAppKey)))
+                           ) @ #vk.46 )
+                      case Shared_Key_Reveal2_case_1
+                      by contradiction /* from formulas */
+                    next
+                      case Shared_Key_Reveal2_case_2
+                      by contradiction /* from formulas */
+                    next
+                      case c_SessionKey
+                      solve( !KU( senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), $JoinEUI, 
+                                        ('1'+z), 'pad_with_0s'>,
+                                       AesKey('App', ~rootAppKey))
+                             ) @ #vk.48 )
+                        case c_senc
+                        solve( !KU( AesKey('App', ~rootAppKey) ) @ #vk.51 )
+                          case Shared_Key_Reveal1_case_1
+                          by contradiction /* from formulas */
+                        next
+                          case Shared_Key_Reveal1_case_2
+                          by contradiction /* from formulas */
+                        next
+                          case c_AesKey
+                          by solve( !KU( ~rootAppKey ) @ #vk.61 )
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            next
+              case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_2
+              by solve( In_S( $AS, $JoinEUI,
+                              <'Join_Request', $JoinEUI, $DevEUI.3, Counter((ctr_ED_in+z.1)), 
+                               MAC(<'MHDR', $JoinEUI, $DevEUI.3, (ctr_ED_in+z.1)>,
+                                   AesKey('Nwk', ~rootNwkKey.3))
+                              >
+                        ) ▶₀ #vr.31 )
+            next
+              case c_PD_Wrapper
+              solve( !KU( senc(<$DevEUI, data>,
+                               SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), $JoinEUI, 
+                                                ('1'+z), 'pad_with_0s'>,
+                                               AesKey('App', ~rootAppKey))))
+                     ) @ #vk.27 )
+                case Device_Send_Message_To_App_Server_case_1
+                solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                       ) ▶₀ #vr.31 )
+                  case EndDevice_Commissioned
+                  by contradiction /* from formulas */
+                qed
+              next
+                case Device_Send_Message_To_App_Server_case_2
+                solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                       ) ▶₀ #vr.31 )
+                  case Device_Join_Request
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                         ) ▶₀ #vr.33 )
+                    case EndDevice_Commissioned
+                    by contradiction /* from formulas */
+                  qed
+                qed
+              next
+                case c_senc
+                solve( !KU( SessionKey(senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), 
+                                             $JoinEUI, ('1'+z), 'pad_with_0s'>,
+                                            AesKey('App', ~rootAppKey)))
+                       ) @ #vk.29 )
+                  case Shared_Key_Reveal2_case_1
+                  by contradiction /* from formulas */
+                next
+                  case Shared_Key_Reveal2_case_2
+                  by contradiction /* from formulas */
+                next
+                  case c_SessionKey
+                  solve( !KU( senc(<'0x02', Nonce(<$DevEUI, ('2'+'2')>), $JoinEUI, 
+                                    ('1'+z), 'pad_with_0s'>,
+                                   AesKey('App', ~rootAppKey))
+                         ) @ #vk.31 )
+                    case c_senc
+                    solve( !KU( AesKey('App', ~rootAppKey) ) @ #vk.34 )
+                      case Shared_Key_Reveal1_case_1
+                      by contradiction /* from formulas */
+                    next
+                      case Shared_Key_Reveal1_case_2
+                      by contradiction /* from formulas */
+                    next
+                      case c_AesKey
+                      by solve( !KU( ~rootAppKey ) @ #vk.44 )
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          next
+            case JoinServer_Receive_JoinRequest_Generate_Response_with_Key
+            solve( In_S( $NS, $JoinEUI,
+                         <'Join_Request', $JoinEUI, $DevEUI, Counter((ctr_ED_in+z.1)), 
+                          MAC(<'MHDR', $JoinEUI, $DevEUI, (ctr_ED_in+z.1)>,
+                              AesKey('Nwk', ~rootNwkKey))
+                         >
+                   ) ▶₀ #vr.23 )
+              case ChanIn_S
+              solve( !KU( senc(<$DevEUI, encData, 
+                                MAC(<$DevEUI, $NS, encData>,
+                                    SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                                     $JoinEUI, (ctr_ED_in+z+z.1), 'pad_with_0s'>,
+                                                    AesKey('Nwk', ~rootNwkKey))))
+                               >,
+                               SessionKey(senc(<'0x04', Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                                $JoinEUI, (ctr_ED_in+z+z.1), 'pad_with_0s'>,
+                                               AesKey('Nwk', ~rootNwkKey))))
+                     ) @ #vk.20 )
+                case Device_Send_Message_To_App_Server_case_1
+                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                       ) ▶₀ #vr.34 )
+                  case Device_Join_Request
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                         ) ▶₀ #vr.36 )
+                    case EndDevice_Commissioned
+                    solve( JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                                        <'1', ctr_JS_in, JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                                         FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, AppSKey_in>
+                           ) ▶₁ #vr.23 )
+                      case JoinServer_Commissioned
+                      solve( CheckCtrJS( $DevEUI, '2' ) ▶₄ #vr.33 )
+                        case EndDevice_Commissioned
+                        solve( !KU( MAC(<$DevEUI, $NS, 
+                                         senc(<$DevEUI, SensorData(~rndData)>,
+                                              SessionKey(senc(<'0x02', 
+                                                               Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                               $JoinEUI, ('1'+'1'+'1'), 
+                                                               'pad_with_0s'>,
+                                                              AesKey('App', ~rootAppKey))))
+                                        >,
+                                        SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                         $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                        AesKey('Nwk', ~rootNwkKey))))
+                               ) @ #vk.27 )
+                          case Device_Send_Message_To_App_Server_case_1
+                          solve( !KU( SessionKey(senc(<'0x04', 
+                                                       Nonce(<$DevEUI, ('2'+'2'+'2')>), $JoinEUI, 
+                                                       ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                      AesKey('Nwk', ~rootNwkKey)))
+                                 ) @ #vk.39 )
+                            case Shared_Key_Reveal2_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal2_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_SessionKey
+                            solve( !KU( senc(<'0x04', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                              $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                             AesKey('Nwk', ~rootNwkKey))
+                                   ) @ #vk.40 )
+                              case c_senc
+                              solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.43 )
+                                case Shared_Key_Reveal1_case_1
+                                by contradiction /* from formulas */
+                              next
+                                case Shared_Key_Reveal1_case_2
+                                by contradiction /* from formulas */
+                              next
+                                case c_AesKey
+                                by solve( !KU( ~rootNwkKey ) @ #vk.52 )
+                              qed
+                            qed
+                          qed
+                        next
+                          case Device_Send_Message_To_App_Server_case_2
+                          solve( !KU( PD_Wrapper(senc(<$DevEUI, data>,
+                                                      SessionKey(senc(<'0x02', 
+                                                                       Nonce(<$DevEUI, ('2'+'2'+'2')
+                                                                             >), 
+                                                                       $JoinEUI, ('1'+'1'+'1'), 
+                                                                       'pad_with_0s'>,
+                                                                      AesKey('App', ~rootAppKey)))))
+                                 ) @ #vk.25 )
+                            case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_1
+                            solve( In_S( $NS.1, $JoinEUI,
+                                         <'Join_Request', $JoinEUI, $DevEUI.4, 
+                                          Counter((ctr_ED_in+z)), 
+                                          MAC(<'MHDR', $JoinEUI, $DevEUI.4, (ctr_ED_in+z)>,
+                                              AesKey('Nwk', ~rootNwkKey.4))
+                                         >
+                                   ) ▶₀ #vr.47 )
+                              case ChanIn_S
+                              solve( !KU( senc(<$DevEUI.1, 
+                                                senc(<$DevEUI, data>,
+                                                     SessionKey(senc(<'0x02', 
+                                                                      Nonce(<$DevEUI, ('2'+'2'+'2')
+                                                                            >), 
+                                                                      $JoinEUI, ('1'+'1'+'1'), 
+                                                                      'pad_with_0s'>,
+                                                                     AesKey('App', ~rootAppKey)))), 
+                                                MAC(<$DevEUI.1, $NS, 
+                                                     senc(<$DevEUI, data>,
+                                                          SessionKey(senc(<'0x02', 
+                                                                           Nonce(<$DevEUI, 
+                                                                                  ('2'+'2'+'2')>), 
+                                                                           $JoinEUI, ('1'+'1'+'1'), 
+                                                                           'pad_with_0s'>,
+                                                                          AesKey('App',
+                                                                                 ~rootAppKey))))
+                                                    >,
+                                                    SessionKey(senc(<'0x01', 
+                                                                     Nonce(<$DevEUI.1, 
+                                                                            ('2'+ctr_JS_in)>), 
+                                                                     $JoinEUI, (ctr_ED_in+z), 
+                                                                     'pad_with_0s'>,
+                                                                    AesKey('Nwk', ~rootNwkKey.4))))
+                                               >,
+                                               SessionKey(senc(<'0x04', 
+                                                                Nonce(<$DevEUI.1, ('2'+ctr_JS_in)
+                                                                      >), 
+                                                                $JoinEUI, (ctr_ED_in+z), 
+                                                                'pad_with_0s'>,
+                                                               AesKey('Nwk', ~rootNwkKey.4))))
+                                     ) @ #vk.48 )
+                                case Device_Send_Message_To_App_Server_case_1
+                                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                       ) ▶₀ #vr.60 )
+                                  case Device_Join_Request
+                                  by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                            ) ▶₀ #vr.61 )
+                                qed
+                              next
+                                case Device_Send_Message_To_App_Server_case_2
+                                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                       ) ▶₀ #vr.60 )
+                                  case Device_Join_Request
+                                  by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                            ) ▶₀ #vr.61 )
+                                qed
+                              next
+                                case Device_Send_Message_To_App_Server_case_3
+                                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                       ) ▶₀ #vr.60 )
+                                  case Device_Join_Request
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                         ) ▶₀ #vr.61 )
+                                    case EndDevice_Commissioned
+                                    by contradiction /* from formulas */
+                                  qed
+                                qed
+                              next
+                                case Device_Send_Message_To_App_Server_case_4
+                                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                       ) ▶₀ #vr.60 )
+                                  case Device_Join_Request
+                                  by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                            ) ▶₀ #vr.61 )
+                                qed
+                              next
+                                case c_senc
+                                solve( !KU( MAC(<$DevEUI.1, $NS, 
+                                                 senc(<$DevEUI, data>,
+                                                      SessionKey(senc(<'0x02', 
+                                                                       Nonce(<$DevEUI, ('2'+'2'+'2')
+                                                                             >), 
+                                                                       $JoinEUI, ('1'+'1'+'1'), 
+                                                                       'pad_with_0s'>,
+                                                                      AesKey('App', ~rootAppKey))))
+                                                >,
+                                                SessionKey(senc(<'0x01', 
+                                                                 Nonce(<$DevEUI.1, ('2'+ctr_JS_in)
+                                                                       >), 
+                                                                 $JoinEUI, (ctr_ED_in+z), 
+                                                                 'pad_with_0s'>,
+                                                                AesKey('Nwk', ~rootNwkKey.4))))
+                                       ) @ #vk.50 )
+                                  case Device_Send_Message_To_App_Server_case_1
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.63 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.64 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_2
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.63 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.64 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_3
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.63 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.64 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_4
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.63 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.64 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_5
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.61 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.62 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_6
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.61 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.62 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_7
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.61 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.62 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_8
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.61 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                              ) ▶₀ #vr.62 )
+                                  qed
+                                next
+                                  case c_MAC
+                                  solve( !KU( senc(<$DevEUI, data>,
+                                                   SessionKey(senc(<'0x02', 
+                                                                    Nonce(<$DevEUI, ('2'+'2'+'2')
+                                                                          >), 
+                                                                    $JoinEUI, ('1'+'1'+'1'), 
+                                                                    'pad_with_0s'>,
+                                                                   AesKey('App', ~rootAppKey))))
+                                         ) @ #vk.58 )
+                                    case Device_Send_Message_To_App_Server_case_1
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                           ) ▶₀ #vr.66 )
+                                      case Device_Join_Request
+                                      solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                             ) ▶₀ #vr.67 )
+                                        case EndDevice_Commissioned
+                                        by contradiction /* from formulas */
+                                      qed
+                                    qed
+                                  next
+                                    case Device_Send_Message_To_App_Server_case_2
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                           ) ▶₀ #vr.66 )
+                                      case Device_Join_Request
+                                      by solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                                ) ▶₀ #vr.67 )
+                                    qed
+                                  next
+                                    case c_senc
+                                    solve( !KU( SessionKey(senc(<'0x02', 
+                                                                 Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                                 $JoinEUI, ('1'+'1'+'1'), 
+                                                                 'pad_with_0s'>,
+                                                                AesKey('App', ~rootAppKey)))
+                                           ) @ #vk.61 )
+                                      case Shared_Key_Reveal2_case_1
+                                      by contradiction /* from formulas */
+                                    next
+                                      case Shared_Key_Reveal2_case_2
+                                      by contradiction /* from formulas */
+                                    next
+                                      case c_SessionKey
+                                      solve( !KU( senc(<'0x02', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                        $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                       AesKey('App', ~rootAppKey))
+                                             ) @ #vk.63 )
+                                        case c_senc
+                                        solve( !KU( AesKey('App', ~rootAppKey) ) @ #vk.66 )
+                                          case Shared_Key_Reveal1_case_1
+                                          by contradiction /* from formulas */
+                                        next
+                                          case Shared_Key_Reveal1_case_2
+                                          by contradiction /* from formulas */
+                                        next
+                                          case c_AesKey
+                                          by solve( !KU( ~rootAppKey ) @ #vk.75 )
+                                        qed
+                                      qed
+                                    qed
+                                  qed
+                                qed
+                              qed
+                            qed
+                          next
+                            case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_2
+                            by solve( In_S( $AS, $JoinEUI,
+                                            <'Join_Request', $JoinEUI, $DevEUI.4, 
+                                             Counter((ctr_ED_in+z)), 
+                                             MAC(<'MHDR', $JoinEUI, $DevEUI.4, (ctr_ED_in+z)>,
+                                                 AesKey('Nwk', ~rootNwkKey.4))
+                                            >
+                                      ) ▶₀ #vr.47 )
+                          next
+                            case c_PD_Wrapper
+                            solve( !KU( senc(<$DevEUI, data>,
+                                             SessionKey(senc(<'0x02', 
+                                                              Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                              $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'
+                                                             >,
+                                                             AesKey('App', ~rootAppKey))))
+                                   ) @ #vk.39 )
+                              case Device_Send_Message_To_App_Server_case_1
+                              solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                     ) ▶₀ #vr.47 )
+                                case Device_Join_Request
+                                solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                       ) ▶₀ #vr.48 )
+                                  case EndDevice_Commissioned
+                                  by contradiction /* from formulas */
+                                qed
+                              qed
+                            next
+                              case Device_Send_Message_To_App_Server_case_2
+                              solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                     ) ▶₀ #vr.47 )
+                                case Device_Join_Request
+                                by solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                          ) ▶₀ #vr.48 )
+                              qed
+                            next
+                              case c_senc
+                              solve( !KU( SessionKey(senc(<'0x02', 
+                                                           Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                           $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                          AesKey('App', ~rootAppKey)))
+                                     ) @ #vk.41 )
+                                case Shared_Key_Reveal2_case_1
+                                by contradiction /* from formulas */
+                              next
+                                case Shared_Key_Reveal2_case_2
+                                by contradiction /* from formulas */
+                              next
+                                case c_SessionKey
+                                solve( !KU( senc(<'0x02', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                  $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                 AesKey('App', ~rootAppKey))
+                                       ) @ #vk.43 )
+                                  case c_senc
+                                  solve( !KU( AesKey('App', ~rootAppKey) ) @ #vk.46 )
+                                    case Shared_Key_Reveal1_case_1
+                                    by contradiction /* from formulas */
+                                  next
+                                    case Shared_Key_Reveal1_case_2
+                                    by contradiction /* from formulas */
+                                  next
+                                    case c_AesKey
+                                    by solve( !KU( ~rootAppKey ) @ #vk.55 )
+                                  qed
+                                qed
+                              qed
+                            qed
+                          qed
+                        next
+                          case c_MAC
+                          solve( !KU( SessionKey(senc(<'0x01', 
+                                                       Nonce(<$DevEUI, ('2'+'2'+'2')>), $JoinEUI, 
+                                                       ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                      AesKey('Nwk', ~rootNwkKey)))
+                                 ) @ #vk.41 )
+                            case Shared_Key_Reveal2_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal2_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_SessionKey
+                            solve( !KU( senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                              $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                             AesKey('Nwk', ~rootNwkKey))
+                                   ) @ #vk.43 )
+                              case c_senc
+                              solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.46 )
+                                case Shared_Key_Reveal1_case_1
+                                by contradiction /* from formulas */
+                              next
+                                case Shared_Key_Reveal1_case_2
+                                by contradiction /* from formulas */
+                              next
+                                case c_AesKey
+                                by solve( !KU( ~rootNwkKey ) @ #vk.55 )
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              next
+                case Device_Send_Message_To_App_Server_case_2
+                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                       ) ▶₀ #vr.34 )
+                  case Device_Join_Request
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                         ) ▶₀ #vr.36 )
+                    case EndDevice_Commissioned
+                    solve( !KU( MAC(<$DevEUI, $NS, 
+                                     senc(<$DevEUI, SensorData(~rndData)>,
+                                          SessionKey(senc(<'0x02', 
+                                                           Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                                           $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                          AesKey('App', ~rootAppKey))))
+                                    >,
+                                    SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                                     $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                    AesKey('Nwk', ~rootNwkKey))))
+                           ) @ #vk.27 )
+                      case Device_Send_Message_To_App_Server_case_1
+                      solve( !KU( SessionKey(senc(<'0x04', 
+                                                   Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), $JoinEUI, 
+                                                   ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                  AesKey('Nwk', ~rootNwkKey)))
+                             ) @ #vk.39 )
+                        case Shared_Key_Reveal2_case_1
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_2
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_3
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_4
+                        by contradiction /* from formulas */
+                      next
+                        case c_SessionKey
+                        solve( !KU( senc(<'0x04', Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey))
+                               ) @ #vk.40 )
+                          case c_senc
+                          solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.43 )
+                            case Shared_Key_Reveal1_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal1_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_AesKey
+                            by solve( !KU( ~rootNwkKey ) @ #vk.52 )
+                          qed
+                        qed
+                      qed
+                    next
+                      case Device_Send_Message_To_App_Server_case_2
+                      solve( CheckCtrJS( $DevEUI, ('2'+'2') ) ▶₄ #vr.33 )
+                        case Device_Receive_JoinAccept_case_1
+                        solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                               ) ▶₀ #vr.40 )
+                          case EndDevice_Commissioned
+                          solve( CheckCtrJS( $DevEUI, '2' ) ▶₄ #vr.39 )
+                            case EndDevice_Commissioned
+                            solve( JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                                                <'1', ctr_JS_in, JoinNonce_in, DevAddr_in, 
+                                                 JSIntKey_in, FNwkSIntKey_in, SNwkSIntKey_in, 
+                                                 NwkSEncKey_in, AppSKey_in>
+                                   ) ▶₁ #vr.23 )
+                              case JoinServer_Commissioned
+                              solve( !KU( PD_Wrapper(senc(<$DevEUI, data>,
+                                                          SessionKey(senc(<'0x02', 
+                                                                           Nonce(<$DevEUI, 
+                                                                                  ('2'+'2'+'2')>), 
+                                                                           $JoinEUI, ('1'+'1'+'1'), 
+                                                                           'pad_with_0s'>,
+                                                                          AesKey('App',
+                                                                                 ~rootAppKey)))))
+                                     ) @ #vk.29 )
+                                case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_1
+                                solve( In_S( $NS.1, $JoinEUI,
+                                             <'Join_Request', $JoinEUI, $DevEUI.4, 
+                                              Counter((ctr_ED_in+z)), 
+                                              MAC(<'MHDR', $JoinEUI, $DevEUI.4, (ctr_ED_in+z)>,
+                                                  AesKey('Nwk', ~rootNwkKey.4))
+                                             >
+                                       ) ▶₀ #vr.48 )
+                                  case ChanIn_S
+                                  solve( !KU( senc(<$DevEUI.1, 
+                                                    senc(<$DevEUI, data>,
+                                                         SessionKey(senc(<'0x02', 
+                                                                          Nonce(<$DevEUI, 
+                                                                                 ('2'+'2'+'2')>), 
+                                                                          $JoinEUI, ('1'+'1'+'1'), 
+                                                                          'pad_with_0s'>,
+                                                                         AesKey('App',
+                                                                                ~rootAppKey)))), 
+                                                    MAC(<$DevEUI.1, $NS, 
+                                                         senc(<$DevEUI, data>,
+                                                              SessionKey(senc(<'0x02', 
+                                                                               Nonce(<$DevEUI, 
+                                                                                      ('2'+'2'+'2')
+                                                                                     >), 
+                                                                               $JoinEUI, 
+                                                                               ('1'+'1'+'1'), 
+                                                                               'pad_with_0s'>,
+                                                                              AesKey('App',
+                                                                                     ~rootAppKey))))
+                                                        >,
+                                                        SessionKey(senc(<'0x01', 
+                                                                         Nonce(<$DevEUI.1, 
+                                                                                ('2'+ctr_JS_in)>), 
+                                                                         $JoinEUI, (ctr_ED_in+z), 
+                                                                         'pad_with_0s'>,
+                                                                        AesKey('Nwk',
+                                                                               ~rootNwkKey.4))))
+                                                   >,
+                                                   SessionKey(senc(<'0x04', 
+                                                                    Nonce(<$DevEUI.1, 
+                                                                           ('2'+ctr_JS_in)>), 
+                                                                    $JoinEUI, (ctr_ED_in+z), 
+                                                                    'pad_with_0s'>,
+                                                                   AesKey('Nwk', ~rootNwkKey.4))))
+                                         ) @ #vk.52 )
+                                    case Device_Send_Message_To_App_Server_case_1
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                           ) ▶₀ #vr.61 )
+                                      case Device_Join_Request
+                                      by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                                ) ▶₀ #vr.62 )
+                                    qed
+                                  next
+                                    case Device_Send_Message_To_App_Server_case_2
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                           ) ▶₀ #vr.61 )
+                                      case Device_Join_Request
+                                      by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                                ) ▶₀ #vr.62 )
+                                    qed
+                                  next
+                                    case Device_Send_Message_To_App_Server_case_3
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                           ) ▶₀ #vr.61 )
+                                      case Device_Join_Request
+                                      by solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                                ) ▶₀ #vr.62 )
+                                    qed
+                                  next
+                                    case Device_Send_Message_To_App_Server_case_4
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                                           ) ▶₀ #vr.61 )
+                                      case Device_Join_Request
+                                      solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                                             ) ▶₀ #vr.62 )
+                                        case EndDevice_Commissioned
+                                        by contradiction /* from formulas */
+                                      qed
+                                    qed
+                                  next
+                                    case c_senc
+                                    solve( !KU( senc(<$DevEUI, data>,
+                                                     SessionKey(senc(<'0x02', 
+                                                                      Nonce(<$DevEUI, ('2'+'2'+'2')
+                                                                            >), 
+                                                                      $JoinEUI, ('1'+'1'+'1'), 
+                                                                      'pad_with_0s'>,
+                                                                     AesKey('App', ~rootAppKey))))
+                                           ) @ #vk.60 )
+                                      case Device_Send_Message_To_App_Server_case_1
+                                      solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                             ) ▶₀ #vr.67 )
+                                        case Device_Join_Request
+                                        by solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                                  ) ▶₀ #vr.68 )
+                                      qed
+                                    next
+                                      case Device_Send_Message_To_App_Server_case_2
+                                      solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                             ) ▶₀ #vr.67 )
+                                        case Device_Join_Request
+                                        solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                               ) ▶₀ #vr.68 )
+                                          case EndDevice_Commissioned
+                                          by contradiction /* from formulas */
+                                        qed
+                                      qed
+                                    next
+                                      case c_senc
+                                      solve( !KU( SessionKey(senc(<'0x02', 
+                                                                   Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                                   $JoinEUI, ('1'+'1'+'1'), 
+                                                                   'pad_with_0s'>,
+                                                                  AesKey('App', ~rootAppKey)))
+                                             ) @ #vk.62 )
+                                        case Shared_Key_Reveal2_case_1
+                                        by contradiction /* from formulas */
+                                      next
+                                        case Shared_Key_Reveal2_case_2
+                                        by contradiction /* from formulas */
+                                      next
+                                        case c_SessionKey
+                                        solve( !KU( senc(<'0x02', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                         AesKey('App', ~rootAppKey))
+                                               ) @ #vk.64 )
+                                          case c_senc
+                                          solve( !KU( AesKey('App', ~rootAppKey) ) @ #vk.67 )
+                                            case Shared_Key_Reveal1_case_1
+                                            by contradiction /* from formulas */
+                                          next
+                                            case Shared_Key_Reveal1_case_2
+                                            by contradiction /* from formulas */
+                                          next
+                                            case c_AesKey
+                                            by solve( !KU( ~rootAppKey ) @ #vk.76 )
+                                          qed
+                                        qed
+                                      qed
+                                    qed
+                                  qed
+                                qed
+                              next
+                                case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_2
+                                by solve( In_S( $AS, $JoinEUI,
+                                                <'Join_Request', $JoinEUI, $DevEUI.4, 
+                                                 Counter((ctr_ED_in+z)), 
+                                                 MAC(<'MHDR', $JoinEUI, $DevEUI.4, (ctr_ED_in+z)>,
+                                                     AesKey('Nwk', ~rootNwkKey.4))
+                                                >
+                                          ) ▶₀ #vr.48 )
+                              next
+                                case c_PD_Wrapper
+                                solve( !KU( senc(<$DevEUI, data>,
+                                                 SessionKey(senc(<'0x02', 
+                                                                  Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                                  $JoinEUI, ('1'+'1'+'1'), 
+                                                                  'pad_with_0s'>,
+                                                                 AesKey('App', ~rootAppKey))))
+                                       ) @ #vk.43 )
+                                  case Device_Send_Message_To_App_Server_case_1
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.48 )
+                                    case Device_Join_Request
+                                    by solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                              ) ▶₀ #vr.49 )
+                                  qed
+                                next
+                                  case Device_Send_Message_To_App_Server_case_2
+                                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                                         ) ▶₀ #vr.48 )
+                                    case Device_Join_Request
+                                    solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                           ) ▶₀ #vr.49 )
+                                      case EndDevice_Commissioned
+                                      by contradiction /* from formulas */
+                                    qed
+                                  qed
+                                next
+                                  case c_senc
+                                  solve( !KU( SessionKey(senc(<'0x02', 
+                                                               Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                               $JoinEUI, ('1'+'1'+'1'), 
+                                                               'pad_with_0s'>,
+                                                              AesKey('App', ~rootAppKey)))
+                                         ) @ #vk.45 )
+                                    case Shared_Key_Reveal2_case_1
+                                    by contradiction /* from formulas */
+                                  next
+                                    case Shared_Key_Reveal2_case_2
+                                    by contradiction /* from formulas */
+                                  next
+                                    case c_SessionKey
+                                    solve( !KU( senc(<'0x02', Nonce(<$DevEUI, ('2'+'2'+'2')>), 
+                                                      $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                     AesKey('App', ~rootAppKey))
+                                           ) @ #vk.47 )
+                                      case c_senc
+                                      solve( !KU( AesKey('App', ~rootAppKey) ) @ #vk.50 )
+                                        case Shared_Key_Reveal1_case_1
+                                        by contradiction /* from formulas */
+                                      next
+                                        case Shared_Key_Reveal1_case_2
+                                        by contradiction /* from formulas */
+                                      next
+                                        case c_AesKey
+                                        by solve( !KU( ~rootAppKey ) @ #vk.59 )
+                                      qed
+                                    qed
+                                  qed
+                                qed
+                              qed
+                            qed
+                          qed
+                        qed
+                      next
+                        case Device_Receive_JoinAccept_case_2
+                        solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, ('1'+'1')
+                               ) ▶₀ #vr.40 )
+                          case Device_Join_Request
+                          by solve( ED_State_01( $DevEUI, $JoinEUI, $NS.1, $AS.1, '1'
+                                    ) ▶₀ #vr.41 )
+                        qed
+                      qed
+                    next
+                      case c_MAC
+                      solve( !KU( SessionKey(senc(<'0x01', 
+                                                   Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), $JoinEUI, 
+                                                   ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                  AesKey('Nwk', ~rootNwkKey)))
+                             ) @ #vk.41 )
+                        case Shared_Key_Reveal2_case_1
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_2
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_3
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_4
+                        by contradiction /* from formulas */
+                      next
+                        case c_SessionKey
+                        solve( !KU( senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey))
+                               ) @ #vk.43 )
+                          case c_senc
+                          solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.46 )
+                            case Shared_Key_Reveal1_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal1_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_AesKey
+                            by solve( !KU( ~rootNwkKey ) @ #vk.55 )
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              next
+                case Device_Send_Message_To_App_Server_case_3
+                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                       ) ▶₀ #vr.34 )
+                  case Device_Join_Request
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                         ) ▶₀ #vr.36 )
+                    case EndDevice_Commissioned
+                    solve( !KU( MAC(<$DevEUI, $NS, 
+                                     senc(<$DevEUI, SensorData(~rndData)>,
+                                          SessionKey(senc(<'0x02', 
+                                                           Nonce(<$DevEUI, ('2'+'2'+'2'+z)>), 
+                                                           $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                          AesKey('App', ~rootAppKey))))
+                                    >,
+                                    SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+'2'+z)>), 
+                                                     $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                    AesKey('Nwk', ~rootNwkKey))))
+                           ) @ #vk.27 )
+                      case Device_Send_Message_To_App_Server_case_1
+                      solve( !KU( SessionKey(senc(<'0x04', 
+                                                   Nonce(<$DevEUI, ('2'+'2'+'2'+z)>), $JoinEUI, 
+                                                   ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                  AesKey('Nwk', ~rootNwkKey)))
+                             ) @ #vk.39 )
+                        case Shared_Key_Reveal2_case_1
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_2
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_3
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_4
+                        by contradiction /* from formulas */
+                      next
+                        case c_SessionKey
+                        solve( !KU( senc(<'0x04', Nonce(<$DevEUI, ('2'+'2'+'2'+z)>), 
+                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey))
+                               ) @ #vk.40 )
+                          case c_senc
+                          solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.43 )
+                            case Shared_Key_Reveal1_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal1_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_AesKey
+                            by solve( !KU( ~rootNwkKey ) @ #vk.52 )
+                          qed
+                        qed
+                      qed
+                    next
+                      case Device_Send_Message_To_App_Server_case_2
+                      by solve( JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                                             <'1', ('2'+z), JoinNonce_in, DevAddr_in, JSIntKey_in, 
+                                              FNwkSIntKey_in, SNwkSIntKey_in, NwkSEncKey_in, 
+                                              AppSKey_in>
+                                ) ▶₁ #vr.23 )
+                    next
+                      case c_MAC
+                      solve( !KU( SessionKey(senc(<'0x01', 
+                                                   Nonce(<$DevEUI, ('2'+'2'+'2'+z)>), $JoinEUI, 
+                                                   ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                  AesKey('Nwk', ~rootNwkKey)))
+                             ) @ #vk.41 )
+                        case Shared_Key_Reveal2_case_1
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_2
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_3
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_4
+                        by contradiction /* from formulas */
+                      next
+                        case c_SessionKey
+                        solve( !KU( senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+'2'+z)>), 
+                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey))
+                               ) @ #vk.43 )
+                          case c_senc
+                          solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.46 )
+                            case Shared_Key_Reveal1_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal1_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_AesKey
+                            by solve( !KU( ~rootNwkKey ) @ #vk.55 )
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              next
+                case Device_Send_Message_To_App_Server_case_4
+                solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, ('1'+'1')
+                       ) ▶₀ #vr.34 )
+                  case Device_Join_Request
+                  solve( ED_State_01( $DevEUI, $JoinEUI, $NS, $AS.1, '1'
+                         ) ▶₀ #vr.36 )
+                    case EndDevice_Commissioned
+                    solve( !KU( MAC(<$DevEUI, $NS, 
+                                     senc(<$DevEUI, SensorData(~rndData)>,
+                                          SessionKey(senc(<'0x02', 
+                                                           Nonce(<$DevEUI, ('2'+'2'+'2'+'2'+z)>), 
+                                                           $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                          AesKey('App', ~rootAppKey))))
+                                    >,
+                                    SessionKey(senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+'2'+'2'+z)>), 
+                                                     $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                    AesKey('Nwk', ~rootNwkKey))))
+                           ) @ #vk.27 )
+                      case Device_Send_Message_To_App_Server_case_1
+                      solve( !KU( SessionKey(senc(<'0x04', 
+                                                   Nonce(<$DevEUI, ('2'+'2'+'2'+'2'+z)>), $JoinEUI, 
+                                                   ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                  AesKey('Nwk', ~rootNwkKey)))
+                             ) @ #vk.39 )
+                        case Shared_Key_Reveal2_case_1
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_2
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_3
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_4
+                        by contradiction /* from formulas */
+                      next
+                        case c_SessionKey
+                        solve( !KU( senc(<'0x04', Nonce(<$DevEUI, ('2'+'2'+'2'+'2'+z)>), 
+                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey))
+                               ) @ #vk.40 )
+                          case c_senc
+                          solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.43 )
+                            case Shared_Key_Reveal1_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal1_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_AesKey
+                            by solve( !KU( ~rootNwkKey ) @ #vk.52 )
+                          qed
+                        qed
+                      qed
+                    next
+                      case Device_Send_Message_To_App_Server_case_2
+                      by solve( JS_State_01( $JoinEUI, $DevEUI, $NS, $AS,
+                                             <'1', ('2'+'2'+z), JoinNonce_in, DevAddr_in, 
+                                              JSIntKey_in, FNwkSIntKey_in, SNwkSIntKey_in, 
+                                              NwkSEncKey_in, AppSKey_in>
+                                ) ▶₁ #vr.23 )
+                    next
+                      case c_MAC
+                      solve( !KU( SessionKey(senc(<'0x01', 
+                                                   Nonce(<$DevEUI, ('2'+'2'+'2'+'2'+z)>), $JoinEUI, 
+                                                   ('1'+'1'+'1'), 'pad_with_0s'>,
+                                                  AesKey('Nwk', ~rootNwkKey)))
+                             ) @ #vk.41 )
+                        case Shared_Key_Reveal2_case_1
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_2
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_3
+                        by contradiction /* from formulas */
+                      next
+                        case Shared_Key_Reveal2_case_4
+                        by contradiction /* from formulas */
+                      next
+                        case c_SessionKey
+                        solve( !KU( senc(<'0x01', Nonce(<$DevEUI, ('2'+'2'+'2'+'2'+z)>), 
+                                          $JoinEUI, ('1'+'1'+'1'), 'pad_with_0s'>,
+                                         AesKey('Nwk', ~rootNwkKey))
+                               ) @ #vk.43 )
+                          case c_senc
+                          solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.46 )
+                            case Shared_Key_Reveal1_case_1
+                            by contradiction /* from formulas */
+                          next
+                            case Shared_Key_Reveal1_case_2
+                            by contradiction /* from formulas */
+                          next
+                            case c_AesKey
+                            by solve( !KU( ~rootNwkKey ) @ #vk.55 )
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              next
+                case c_senc
+                solve( !KU( SessionKey(senc(<'0x04', 
+                                             Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), $JoinEUI, 
+                                             (ctr_ED_in+z+z.1), 'pad_with_0s'>,
+                                            AesKey('Nwk', ~rootNwkKey)))
+                       ) @ #vk.36 )
+                  case Shared_Key_Reveal2_case_1
+                  by contradiction /* from formulas */
+                next
+                  case Shared_Key_Reveal2_case_2
+                  by contradiction /* from formulas */
+                next
+                  case Shared_Key_Reveal2_case_3
+                  by contradiction /* from formulas */
+                next
+                  case Shared_Key_Reveal2_case_4
+                  by contradiction /* from formulas */
+                next
+                  case c_SessionKey
+                  solve( !KU( senc(<'0x04', Nonce(<$DevEUI, ('2'+'2'+ctr_JS_in)>), 
+                                    $JoinEUI, (ctr_ED_in+z+z.1), 'pad_with_0s'>,
+                                   AesKey('Nwk', ~rootNwkKey))
+                         ) @ #vk.38 )
+                    case c_senc
+                    solve( !KU( AesKey('Nwk', ~rootNwkKey) ) @ #vk.41 )
+                      case Shared_Key_Reveal1_case_1
+                      by contradiction /* from formulas */
+                    next
+                      case Shared_Key_Reveal1_case_2
+                      by contradiction /* from formulas */
+                    next
+                      case c_AesKey
+                      by solve( !KU( ~rootNwkKey ) @ #vk.52 )
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      next
+        case NS_Get_Data_From_ED_Forward_to_AS_with_Key_case_4
+        by solve( In_S( $AS, $JoinEUI,
+                        <'Join_Request', $JoinEUI, $DevEUI, Counter((ctr_ED_in+z)), 
+                         MAC(<'MHDR', $JoinEUI, $DevEUI, (ctr_ED_in+z)>,
+                             AesKey('Nwk', ~rootNwkKey))
+                        >
+                  ) ▶₀ #vr.14 )
+      next
+        case c_PD_Wrapper
+        solve( !KU( senc(<AppSKey, $JoinEUI, $DevEUI, $AS>,
+                         AesKey('JSAS', ~JSASKey))
+               ) @ #vk.11 )
+          case c_senc
+          solve( !KU( AesKey('JSAS', ~JSASKey) ) @ #vk.14 )
+            case c_AesKey
+            by solve( !KU( ~JSASKey ) @ #vk.19 )
+          qed
+        qed
+      qed
+    qed
+  qed
+next
+  case AS_Receive_Data_withSessionID_decoding
+  by solve( ASCommissioned( $DevEUI, $JoinEUI, $NS, $AS,
+                            'GetKeyFromJS'
+            ) ▶₁ #t02 )
+qed
+
+/* All well-formedness checks were successful. */
+
+end
